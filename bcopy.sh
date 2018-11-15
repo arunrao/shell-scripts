@@ -36,6 +36,8 @@ if [ "$response" != "y" ]; then
     echo "Ok. No harm done. Exiting program."
     exit 1
 fi
+## Create a backup folder under the source directory (for easy reference and revert)
+mkdir -p $src"/backup";
 ## For each file path in your input file
 while read path; do
     ## $target is the name of the file, removing the path. 
@@ -61,8 +63,11 @@ while read path; do
     if [ -f "$tgtfile" ]
     then
         ## Make a backup of the file in the destination folder
-        echo "Backing up $target to $target$c in $dest";
+        #echo "Backing up $target to $target$c in $dest";
         cp "$tgtfile" "$tgtfile$c";
+        ## Make a backup of the file with original file-name in the "backup" folder
+        mkdir -p $src"/backup/"$subdir;
+        cp "$tgtfile" "$src/backup/$path";
     fi
     ## Now let's copy source to target
     cp "$srcfile" "$tgtfile";
