@@ -16,7 +16,7 @@ A collection of 41 cross-platform shell utilities for macOS and Linux users.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/shell-scripts.git
+git clone https://github.com/arunrao/shell-scripts.git
 cd shell-scripts
 
 # 2. Install (one command!)
