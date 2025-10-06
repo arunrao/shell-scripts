@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# vdeploy - Smart Vercel deployment wrapper
+# Deploys with saved scope and better UX
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SCOPE_FILE=".vercel/scope"
+
+show_usage() {
+    cat <<EOF
+Usage: vdeploy [options]
+
+Deploy to Vercel with smart defaults and better UX.
+
+Options:
+  --prod          Deploy to production
+  --preview       Deploy preview (default)
+  --open          Open deployment in browser (default)
+  --no-open       Don't open browser
+  -h, --help      Show this help
+
+Features:
+  - Auto-uses saved scope (set with: vscope set <team>)
+  - Opens browser on success
+  - Shows deployment URL prominently
+  - Better progress indicators
+
+Examples:
+  vdeploy                    # Deploy preview
+  vdeploy --prod             # Deploy to production
+  vdeploy --prod --no-open   # Deploy without opening browser
+  
+Note: Set scope once with 'vscope set <team>'
+EOF
+}
+
+get_scope_args() {
+    if [[ -f "$SCOPE_FILE" ]]; then
+        local scope
+        scope=$(cat "$SCOPE_FILE")
+        echo "--scope=$scope"
+    else
+        echo ""
+    fi
+}
+
+main() {
+    need_cmd vercel
+    
+    local prod=false
+    local open_browser=true
+    local extra_args=()
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            --prod|--production)
+                prod=true
+                shift
+                ;;
+            --preview)
+                prod=false
+                shift
+                ;;
+            --open)
+                open_browser=true
+                shift
+                ;;
+            --no-open)
+                open_browser=false
+                shift
+                ;;
+            *)
+                extra_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Get scope args
+    local scope_args
+    scope_args=$(get_scope_args)
+    
+    if [[ -n "$scope_args" ]]; then
+        log_info "Using scope from: $SCOPE_FILE"
+    else
+        log_warn "No scope set. Set one with: vscope set <team>"
+    fi
+    
+    # Build command
+    local cmd="vercel"
+    [[ -n "$scope_args" ]] && cmd="$cmd $scope_args"
+    
+    if $prod; then
+        log_info "🚀 Deploying to production..."
+        cmd="$cmd --prod"
+    else
+        log_info "📦 Deploying preview..."
+    fi
+    
+    # Add extra args
+    for arg in "${extra_args[@]}"; do
+        cmd="$cmd $arg"
+    done
+    
+    echo ""
+    log_debug "Running: $cmd"
+    echo ""
+    
+    # Run deployment
+    local deployment_url
+    if deployment_url=$(eval "$cmd" 2>&1 | tee /dev/tty | grep -oE 'https://[^[:space:]]+' | tail -1); then
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "${GREEN}${BOLD}✓ Deployment successful!${NC}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        if [[ -n "$deployment_url" ]]; then
+            echo ""
+            echo "${BOLD}URL:${NC} $deployment_url"
+            echo ""
+            
+            # Copy to clipboard if available
+            if have_cmd pbcopy; then
+                echo "$deployment_url" | pbcopy
+                log_info "URL copied to clipboard"
+            elif have_cmd xclip; then
+                echo "$deployment_url" | xclip -selection clipboard
+                log_info "URL copied to clipboard"
+            fi
+            
+            # Open in browser
+            if $open_browser; then
+                log_info "Opening in browser..."
+                if is_mac; then
+                    open "$deployment_url" &>/dev/null &
+                elif have_cmd xdg-open; then
+                    xdg-open "$deployment_url" &>/dev/null &
+                fi
+            fi
+        fi
+        
+        echo ""
+    else
+        echo ""
+        die "Deployment failed"
+    fi
+}
+
+main "$@"

@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# vscope - Manage Vercel scope/team per project
+# Saves scope locally so you don't need --scope on every command
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+VERCEL_DIR=".vercel"
+SCOPE_FILE="$VERCEL_DIR/scope"
+
+show_usage() {
+    cat <<EOF
+Usage: vscope <command> [args]
+
+Manage Vercel scope/team for the current project.
+Sets scope once, all v* commands auto-use it.
+
+Commands:
+  set <team>      Set scope for this project
+  show            Show current scope
+  list            List available teams
+  clear           Clear saved scope
+  
+Options:
+  -h, --help      Show this help
+
+Examples:
+  vscope set my-team          # Save scope
+  vscope show                 # View current scope
+  vscope list                 # See available teams
+  vscope clear                # Remove saved scope
+  
+After setting scope, all v* commands automatically use it:
+  vdeploy        # Uses saved scope
+  vlogs          # Uses saved scope
+  vvars list     # Uses saved scope
+EOF
+}
+
+set_scope() {
+    local scope="$1"
+    
+    if [[ -z "$scope" ]]; then
+        die "Scope/team name required"
+    fi
+    
+    # Create .vercel directory if it doesn't exist
+    if [[ ! -d "$VERCEL_DIR" ]]; then
+        log_info "Creating $VERCEL_DIR directory..."
+        mkdir -p "$VERCEL_DIR"
+    fi
+    
+    # Save scope
+    echo "$scope" > "$SCOPE_FILE"
+    log_success "Scope set to: $scope"
+    log_info "Saved in: $SCOPE_FILE"
+    echo ""
+    log_info "Now you can use v* commands without --scope:"
+    echo "  vdeploy"
+    echo "  vlogs"
+    echo "  vvars list"
+}
+
+show_scope() {
+    if [[ ! -f "$SCOPE_FILE" ]]; then
+        log_warn "No scope set for this project"
+        echo ""
+        log_info "Set scope with: vscope set <team>"
+        return 1
+    fi
+    
+    local scope
+    scope=$(cat "$SCOPE_FILE")
+    
+    echo "${BOLD}Current scope:${NC} $scope"
+    echo "File: $SCOPE_FILE"
+}
+
+list_teams() {
+    need_cmd vercel
+    
+    log_info "Fetching your Vercel teams..."
+    echo ""
+    
+    # Get teams using vercel teams ls
+    if vercel teams ls 2>/dev/null; then
+        echo ""
+        log_info "Set scope with: vscope set <team-slug>"
+    else
+        log_error "Failed to fetch teams"
+        log_info "Make sure you're logged in: vercel login"
+        exit 1
+    fi
+}
+
+clear_scope() {
+    if [[ ! -f "$SCOPE_FILE" ]]; then
+        log_info "No scope file to clear"
+        return 0
+    fi
+    
+    local scope
+    scope=$(cat "$SCOPE_FILE")
+    
+    if confirm "Clear scope '$scope'?" "y"; then
+        rm "$SCOPE_FILE"
+        log_success "Scope cleared"
+        log_info "Use 'vscope set <team>' to set a new scope"
+    else
+        log_info "Cancelled"
+    fi
+}
+
+main() {
+    # Check for vercel CLI
+    if ! have_cmd vercel; then
+        die "Vercel CLI not found. Install it: npm i -g vercel"
+    fi
+    
+    if [[ $# -eq 0 ]]; then
+        # No args - show current scope
+        show_scope
+        exit 0
+    fi
+    
+    local command="$1"
+    shift || true
+    
+    case "$command" in
+        -h|--help|help)
+            show_usage
+            exit 0
+            ;;
+        set)
+            set_scope "$@"
+            ;;
+        show)
+            show_scope
+            ;;
+        list|ls)
+            list_teams
+            ;;
+        clear|rm|remove)
+            clear_scope
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            echo ""
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

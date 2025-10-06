@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# vvars - Vercel environment variables helper
+# Simplified environment variable management
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SCOPE_FILE=".vercel/scope"
+
+show_usage() {
+    cat <<EOF
+Usage: vvars <command> [args]
+
+Simplified Vercel environment variable management.
+
+Commands:
+  list            List all environment variables (alias: ls)
+  
+Options:
+  -h, --help      Show this help
+
+Features:
+  - Auto-uses saved scope (set with: vscope set <team>)
+  - Cleaner output than 'vercel env ls'
+
+Examples:
+  vvars list              # List all env vars
+  vvars ls                # Same as list
+  
+Note: Set scope once with 'vscope set <team>'
+
+Coming soon:
+  vvars set KEY=value     # Set env variable
+  vvars get KEY           # Get env variable
+  vvars sync              # Pull to .env.local
+  vvars diff              # Compare local vs remote
+EOF
+}
+
+get_scope_args() {
+    if [[ -f "$SCOPE_FILE" ]]; then
+        local scope
+        scope=$(cat "$SCOPE_FILE")
+        echo "--scope=$scope"
+    else
+        echo ""
+    fi
+}
+
+list_vars() {
+    need_cmd vercel
+    
+    # Get scope args
+    local scope_args
+    scope_args=$(get_scope_args)
+    
+    if [[ -n "$scope_args" ]]; then
+        log_debug "Using scope from: $SCOPE_FILE"
+    fi
+    
+    log_info "📋 Listing environment variables..."
+    echo ""
+    
+    # Build command
+    local cmd="vercel env ls"
+    [[ -n "$scope_args" ]] && cmd="$cmd $scope_args"
+    
+    log_debug "Running: $cmd"
+    
+    # Run command
+    eval "$cmd"
+}
+
+main() {
+    if ! have_cmd vercel; then
+        die "Vercel CLI not found. Install it: npm i -g vercel"
+    fi
+    
+    if [[ $# -eq 0 ]]; then
+        log_error "Command required"
+        echo ""
+        show_usage
+        exit 1
+    fi
+    
+    local command="$1"
+    shift || true
+    
+    case "$command" in
+        -h|--help|help)
+            show_usage
+            exit 0
+            ;;
+        list|ls)
+            list_vars "$@"
+            ;;
+        set|get|sync|diff)
+            log_warn "Command '$command' not yet implemented"
+            log_info "Currently only 'list' is available"
+            exit 1
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            echo ""
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

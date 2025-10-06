@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# vlogs - View Vercel deployment logs easily
+# Automatically finds latest deployment
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+SCOPE_FILE=".vercel/scope"
+
+show_usage() {
+    cat <<EOF
+Usage: vlogs [options] [deployment-url]
+
+View Vercel deployment logs with smart defaults.
+
+Arguments:
+  [deployment-url]  Specific deployment (optional, uses latest if omitted)
+
+Options:
+  -f, --follow      Follow logs in real-time (default)
+  --no-follow       Don't follow logs
+  -n, --lines NUM   Number of lines to show (default: 100)
+  --prod            Show production logs
+  -h, --help        Show this help
+
+Features:
+  - Auto-uses saved scope (set with: vscope set <team>)
+  - Auto-finds latest deployment if URL not provided
+  - Follows logs by default
+  - Colorized output
+
+Examples:
+  vlogs                           # Latest deployment logs (follow mode)
+  vlogs --prod                    # Production logs
+  vlogs -n 50                     # Last 50 lines
+  vlogs --no-follow               # Don't follow
+  vlogs https://myapp-xyz.vercel.app  # Specific deployment
+  
+Note: Set scope once with 'vscope set <team>'
+EOF
+}
+
+get_scope_args() {
+    if [[ -f "$SCOPE_FILE" ]]; then
+        local scope
+        scope=$(cat "$SCOPE_FILE")
+        echo "--scope=$scope"
+    else
+        echo ""
+    fi
+}
+
+get_latest_deployment() {
+    local scope_args="$1"
+    
+    log_info "Finding latest deployment..."
+    
+    # Get latest deployment URL
+    local cmd="vercel ls --max 1"
+    [[ -n "$scope_args" ]] && cmd="$cmd $scope_args"
+    
+    local deployment_url
+    deployment_url=$(eval "$cmd" 2>/dev/null | grep -oE 'https://[^[:space:]]+' | head -1)
+    
+    if [[ -z "$deployment_url" ]]; then
+        die "No deployments found"
+    fi
+    
+    echo "$deployment_url"
+}
+
+main() {
+    need_cmd vercel
+    
+    local follow=true
+    local lines=100
+    local deployment_url=""
+    local show_prod=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--follow)
+                follow=true
+                shift
+                ;;
+            --no-follow)
+                follow=false
+                shift
+                ;;
+            -n|--lines)
+                lines="$2"
+                shift 2
+                ;;
+            --prod|--production)
+                show_prod=true
+                shift
+                ;;
+            https://*)
+                deployment_url="$1"
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Get scope args
+    local scope_args
+    scope_args=$(get_scope_args)
+    
+    if [[ -n "$scope_args" ]]; then
+        log_debug "Using scope from: $SCOPE_FILE"
+    fi
+    
+    # Get deployment URL if not provided
+    if [[ -z "$deployment_url" ]]; then
+        if $show_prod; then
+            log_info "Getting production logs..."
+            deployment_url="production"
+        else
+            deployment_url=$(get_latest_deployment "$scope_args")
+        fi
+    fi
+    
+    # Build command
+    local cmd="vercel logs"
+    [[ -n "$scope_args" ]] && cmd="$cmd $scope_args"
+    cmd="$cmd $deployment_url"
+    
+    if $follow; then
+        cmd="$cmd --follow"
+    fi
+    
+    cmd="$cmd -n $lines"
+    
+    echo ""
+    if [[ "$deployment_url" == "production" ]]; then
+        log_info "📜 Viewing production logs..."
+    else
+        log_info "📜 Viewing logs for: $deployment_url"
+    fi
+    
+    if $follow; then
+        log_info "Following logs (Ctrl+C to stop)..."
+    fi
+    
+    echo ""
+    log_debug "Running: $cmd"
+    echo ""
+    
+    # Run logs command
+    eval "$cmd"
+}
+
+main "$@"
