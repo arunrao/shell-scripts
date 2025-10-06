@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# randpw - Generate random passwords
+# Creates secure random passwords or passphrases
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: randpw [options]
+
+Generate random passwords or passphrases.
+
+Options:
+  -l, --length N      Password length (default: 20)
+  -n, --count N       Number of passwords (default: 1)
+  -w, --words N       Generate passphrase with N words (default: 5)
+  -s, --simple        Use only alphanumeric characters
+  -h, --help          Show this help
+
+Features:
+  - Cryptographically secure random generation
+  - Alphanumeric + special characters (default)
+  - Word-based passphrases (with --words)
+  - Multiple passwords at once
+
+Examples:
+  randpw                      # Generate one 20-char password
+  randpw --length 32          # Generate 32-char password
+  randpw --count 5            # Generate 5 passwords
+  randpw --words 6            # Generate 6-word passphrase
+  randpw --simple --length 16 # Alphanumeric only, 16 chars
+EOF
+}
+
+generate_password() {
+    local length=$1
+    local simple=$2
+    
+    if $simple; then
+        # Alphanumeric only
+        if have_cmd openssl; then
+            openssl rand -base64 $((length * 2)) | tr -dc 'A-Za-z0-9' | head -c "$length"
+        else
+            LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$length"
+        fi
+    else
+        # All printable characters
+        if have_cmd openssl; then
+            openssl rand -base64 $((length * 2)) | tr -dc 'A-Za-z0-9!@#$%^&*()_+-=[]{}|;:,.<>?' | head -c "$length"
+        else
+            LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+-=[]{}|;:,.<>?' < /dev/urandom | head -c "$length"
+        fi
+    fi
+    echo ""
+}
+
+generate_passphrase() {
+    local word_count=$1
+    
+    # Common word list locations
+    local wordlist=""
+    if [[ -f /usr/share/dict/words ]]; then
+        wordlist="/usr/share/dict/words"
+    elif [[ -f /usr/dict/words ]]; then
+        wordlist="/usr/dict/words"
+    else
+        log_error "No system word list found"
+        die "Cannot generate passphrase without /usr/share/dict/words"
+    fi
+    
+    # Generate passphrase
+    local words=()
+    for ((i=0; i<word_count; i++)); do
+        local word
+        word=$(shuf -n 1 "$wordlist" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alpha:]')
+        words+=("$word")
+    done
+    
+    echo "${words[*]}" | tr ' ' '-'
+}
+
+main() {
+    local length=20
+    local count=1
+    local words=0
+    local simple=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -l|--length)
+                length="$2"
+                shift 2
+                ;;
+            -n|--count)
+                count="$2"
+                shift 2
+                ;;
+            -w|--words)
+                words="${2:-5}"
+                shift
+                if [[ $# -gt 0 ]] && is_integer "$1"; then
+                    shift
+                fi
+                ;;
+            -s|--simple)
+                simple=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Validate inputs
+    if ! is_integer "$length" || [[ $length -lt 8 ]]; then
+        die "Length must be an integer >= 8"
+    fi
+    
+    if ! is_integer "$count" || [[ $count -lt 1 ]]; then
+        die "Count must be an integer >= 1"
+    fi
+    
+    if [[ $words -gt 0 ]]; then
+        if ! is_integer "$words" || [[ $words -lt 3 ]]; then
+            die "Word count must be an integer >= 3"
+        fi
+        
+        # Generate passphrases
+        for ((i=0; i<count; i++)); do
+            generate_passphrase "$words"
+        done
+    else
+        # Generate passwords
+        for ((i=0; i<count; i++)); do
+            generate_password "$length" "$simple"
+        done
+    fi
+}
+
+main "$@"

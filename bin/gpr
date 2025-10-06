@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# gpr - Fetch and checkout GitHub pull request
+# Fetches a PR from GitHub and checks it out locally
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: gpr <pr-number> [remote]
+
+Fetch and checkout a GitHub pull request locally.
+
+Arguments:
+  <pr-number>  Pull request number
+  [remote]     Remote name (default: origin)
+
+Features:
+  - Fetches PR as a local branch
+  - Names branch as pr/<number>
+  - Shows PR information
+
+Examples:
+  gpr 123              # Fetch PR #123 from origin
+  gpr 456 upstream     # Fetch PR #456 from upstream
+EOF
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_error "Pull request number required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    need_cmd git
+    
+    local pr_num="$1"
+    local remote="${2:-origin}"
+    
+    if ! is_integer "$pr_num"; then
+        die "Invalid pull request number: $pr_num"
+    fi
+    
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir &>/dev/null; then
+        die "Not in a git repository"
+    fi
+    
+    # Check if remote exists
+    if ! git remote | grep -q "^${remote}$"; then
+        die "Remote does not exist: $remote"
+    fi
+    
+    local branch_name="pr/$pr_num"
+    
+    log_info "Fetching PR #$pr_num from $remote..."
+    
+    # Fetch the PR
+    if git fetch "$remote" "pull/$pr_num/head:$branch_name"; then
+        log_success "Fetched PR #$pr_num"
+        
+        log_info "Checking out $branch_name..."
+        if git checkout "$branch_name"; then
+            log_success "Checked out PR #$pr_num"
+            echo ""
+            log_info "Recent commits:"
+            git log --oneline -5
+        else
+            die "Failed to checkout branch: $branch_name"
+        fi
+    else
+        die "Failed to fetch PR #$pr_num from $remote"
+    fi
+}
+
+main "$@"

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# cdf - Change directory to Finder's current directory (macOS only)
+# Gets the current Finder window's path and cds to it
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: cdf
+
+Change directory to the frontmost Finder window's location (macOS only).
+
+Examples:
+  source cdf
+  . cdf
+
+Note: This script must be sourced to change your shell's directory.
+
+Requires: macOS with Finder
+EOF
+}
+
+main() {
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    if ! is_mac; then
+        die "This script only works on macOS"
+    fi
+    
+    # Get current Finder directory using AppleScript
+    local finder_path
+    finder_path=$(osascript -e 'tell application "Finder"
+        if (count of Finder windows) > 0 then
+            set currentDir to (target of front Finder window) as text
+            set currentPath to POSIX path of currentDir
+            return currentPath
+        else
+            return ""
+        end if
+    end tell' 2>/dev/null)
+    
+    if [[ -z "$finder_path" ]]; then
+        die "No Finder window is open"
+    fi
+    
+    if [[ ! -d "$finder_path" ]]; then
+        die "Finder path is not a valid directory: $finder_path"
+    fi
+    
+    cd "$finder_path" || die "Failed to change to directory: $finder_path"
+    log_success "Changed to Finder directory: $(pwd)"
+}
+
+main "$@"

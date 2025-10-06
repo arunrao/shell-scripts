@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# json2yaml - Convert JSON to YAML
+# Uses yq or python fallback
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: json2yaml [file]
+
+Convert JSON to YAML from stdin or file.
+
+Arguments:
+  [file]  JSON file to convert (optional, defaults to stdin)
+
+Options:
+  -h, --help      Show this help
+
+Features:
+  - Converts JSON to YAML
+  - Uses yq if available, falls back to python
+  - Can read from file or stdin
+
+Examples:
+  echo '{"foo":"bar"}' | json2yaml
+  json2yaml config.json
+  json2yaml config.json > config.yaml
+EOF
+}
+
+main() {
+    local file=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                file="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate file if provided
+    if [[ -n "$file" ]] && [[ ! -f "$file" ]]; then
+        die "File not found: $file"
+    fi
+    
+    # Try yq first
+    if have_cmd yq; then
+        if [[ -n "$file" ]]; then
+            yq eval -P "$file"
+        else
+            yq eval -P
+        fi
+    elif have_cmd python3; then
+        # Python fallback with PyYAML
+        python3 -c "
+import sys, yaml, json
+try:
+    data = json.load(sys.stdin if not '$file' else open('$file'))
+    print(yaml.dump(data, default_flow_style=False, sort_keys=False))
+except Exception as e:
+    sys.stderr.write(f'Error: {e}\n')
+    sys.exit(1)
+" < "${file:-/dev/stdin}"
+    else
+        die "No YAML converter available. Please install yq or python3 with PyYAML"
+    fi
+}
+
+main "$@"

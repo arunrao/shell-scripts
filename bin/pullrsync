@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# pullrsync - Safe rsync pull profile
+# Pull files from remote server with safe defaults
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: pullrsync <source> <destination>
+
+Safely pull files from remote server using rsync with sensible defaults.
+
+Arguments:
+  <source>       Remote source (user@host:/path)
+  <destination>  Local destination directory
+
+Features:
+  - Preserves permissions, times, and symlinks
+  - Shows progress and statistics
+  - Compresses data during transfer
+  - Dry-run preview before actual sync
+  - Excludes common unwanted files (.git, node_modules, etc.)
+
+Examples:
+  pullrsync user@server:/var/www/myproject ./myproject
+  pullrsync user@backup.example.com:~/backups/docs/ ~/docs/
+EOF
+}
+
+main() {
+    if [[ $# -lt 2 ]]; then
+        log_error "Source and destination required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    need_cmd rsync
+    
+    local source="$1"
+    local dest="$2"
+    
+    # Create destination if it doesn't exist
+    if [[ ! -d "$dest" ]]; then
+        if confirm "Destination doesn't exist. Create $dest?" "y"; then
+            ensure_dir "$dest"
+        else
+            die "Destination required"
+        fi
+    fi
+    
+    # Ensure dest ends with / for directory sync
+    if [[ -d "$dest" ]] && [[ ! "$dest" =~ /$ ]]; then
+        dest="$dest/"
+    fi
+    
+    local rsync_opts=(
+        -avzh
+        --progress
+        --stats
+        --exclude='.git'
+        --exclude='node_modules'
+        --exclude='.DS_Store'
+        --exclude='Thumbs.db'
+        --exclude='*.swp'
+        --exclude='*.tmp'
+        --exclude='.env.local'
+    )
+    
+    log_info "Dry run: previewing changes..."
+    echo ""
+    
+    # Dry run first
+    if ! rsync --dry-run "${rsync_opts[@]}" "$source" "$dest"; then
+        die "Dry run failed"
+    fi
+    
+    echo ""
+    log_warn "The above changes will be applied"
+    
+    if ! confirm "Proceed with actual sync?" "n"; then
+        log_info "Sync cancelled"
+        exit 0
+    fi
+    
+    echo ""
+    log_info "Syncing files..."
+    
+    # Actual sync
+    if rsync "${rsync_opts[@]}" "$source" "$dest"; then
+        log_success "Sync completed"
+    else
+        die "Sync failed"
+    fi
+}
+
+main "$@"

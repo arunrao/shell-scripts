@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# xcopy - Cross-platform clipboard copy
+# Copies stdin or file contents to clipboard
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: xcopy [FILE]
+
+Copy stdin or file contents to clipboard (cross-platform).
+
+Examples:
+  echo "hello world" | xcopy          Copy from stdin
+  xcopy file.txt                      Copy file contents
+  cat file.txt | xcopy                Copy from pipe
+  
+Supports:
+  - macOS: pbcopy
+  - Linux (Wayland): wl-copy
+  - Linux (X11): xclip or xsel
+EOF
+}
+
+main() {
+    # Parse arguments
+    if [[ $# -gt 1 ]]; then
+        log_error "Too many arguments"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ $# -eq 1 ]]; then
+        if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+            show_usage
+            exit 0
+        fi
+        
+        local file="$1"
+        if [[ ! -f "$file" ]]; then
+            die "File not found: $file"
+        fi
+    fi
+    
+    # Get appropriate clipboard command
+    local clip_cmd
+    if ! clip_cmd=$(get_clipboard_cmd "copy"); then
+        die "No clipboard command available. Please install: xclip, xsel, or wl-clipboard"
+    fi
+    
+    # Copy to clipboard
+    if [[ $# -eq 0 ]]; then
+        # Read from stdin
+        eval "$clip_cmd"
+    else
+        # Read from file
+        eval "$clip_cmd" < "$1"
+    fi
+    
+    log_success "Copied to clipboard"
+}
+
+main "$@"

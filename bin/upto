@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# upto - System uptime information
+# Shows system uptime, last boot time, and recent boots
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: upto [options]
+
+Display system uptime and boot history.
+
+Options:
+  -l, --last N    Show last N boot times (default: 5)
+  -h, --help      Show this help
+
+Features:
+  - Current uptime
+  - Last boot time
+  - Recent boot history (if available)
+  - Load averages
+
+Examples:
+  upto              # Show uptime info
+  upto --last 10    # Show last 10 boots
+EOF
+}
+
+show_current_uptime() {
+    echo "${BOLD}=== Current Uptime ===${NC}"
+    uptime
+    echo ""
+}
+
+show_boot_time() {
+    echo "${BOLD}=== Last Boot ===${NC}"
+    if is_mac; then
+        sysctl -n kern.boottime | sed 's/^.*} //' | awk '{print $2, $3, $4, $5, $6}'
+    else
+        who -b | awk '{print $3, $4, $5}'
+    fi
+    echo ""
+}
+
+show_boot_history() {
+    local count="${1:-5}"
+    
+    echo "${BOLD}=== Recent Boots (last $count) ===${NC}"
+    
+    if is_mac; then
+        # macOS: use last command
+        if have_cmd last; then
+            last reboot | grep reboot | head -n "$count" | awk '{print $3, $4, $5, $6, $7, $8, $9}'
+        else
+            log_warn "Boot history not available"
+        fi
+    else
+        # Linux: try various methods
+        if have_cmd last; then
+            last reboot -n "$count" 2>/dev/null | grep reboot
+        elif [[ -f /var/log/wtmp ]]; then
+            last -f /var/log/wtmp reboot | head -n "$count"
+        elif have_cmd journalctl; then
+            journalctl --list-boots | tail -n "$count"
+        else
+            log_warn "Boot history not available"
+        fi
+    fi
+    echo ""
+}
+
+show_load() {
+    echo "${BOLD}=== System Load ===${NC}"
+    if is_mac; then
+        sysctl -n vm.loadavg
+        echo "CPU cores: $(sysctl -n hw.ncpu)"
+    else
+        cat /proc/loadavg
+        echo "CPU cores: $(nproc)"
+    fi
+    echo ""
+}
+
+main() {
+    local last_count=5
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -l|--last)
+                last_count="$2"
+                shift 2
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    if ! is_integer "$last_count"; then
+        die "Invalid count: $last_count"
+    fi
+    
+    echo "${BOLD}System Uptime - $(hostname)${NC}"
+    echo ""
+    
+    show_current_uptime
+    show_boot_time
+    show_load
+    show_boot_history "$last_count"
+}
+
+main "$@"

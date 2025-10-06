@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# darkmode - Toggle or read macOS dark mode
+# Controls macOS appearance mode
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: darkmode [command]
+
+Toggle or read macOS dark mode appearance.
+
+Commands:
+  on          Enable dark mode
+  off         Disable dark mode (light mode)
+  toggle      Toggle between dark and light mode
+  status      Show current mode (default)
+
+Options:
+  -h, --help  Show this help
+
+Note: macOS only
+
+Examples:
+  darkmode              # Show current status
+  darkmode on           # Enable dark mode
+  darkmode toggle       # Toggle mode
+EOF
+}
+
+get_mode() {
+    defaults read -g AppleInterfaceStyle 2>/dev/null || echo "Light"
+}
+
+set_dark_mode() {
+    osascript -e 'tell app "System Events" to tell appearance preferences to set dark mode to true'
+}
+
+set_light_mode() {
+    osascript -e 'tell app "System Events" to tell appearance preferences to set dark mode to false'
+}
+
+main() {
+    if ! is_mac; then
+        die "This script only works on macOS"
+    fi
+    
+    local command="${1:-status}"
+    
+    case "$command" in
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        on|dark)
+            log_info "Enabling dark mode..."
+            set_dark_mode
+            log_success "Dark mode enabled"
+            ;;
+        off|light)
+            log_info "Enabling light mode..."
+            set_light_mode
+            log_success "Light mode enabled"
+            ;;
+        toggle|switch)
+            local current
+            current=$(get_mode)
+            if [[ "$current" == "Dark" ]]; then
+                log_info "Switching to light mode..."
+                set_light_mode
+                log_success "Light mode enabled"
+            else
+                log_info "Switching to dark mode..."
+                set_dark_mode
+                log_success "Dark mode enabled"
+            fi
+            ;;
+        status|show)
+            local current
+            current=$(get_mode)
+            echo "Current mode: $current"
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

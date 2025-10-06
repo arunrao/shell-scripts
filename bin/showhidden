@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# showhidden - Toggle Finder hidden files visibility
+# Shows or hides hidden files in macOS Finder
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: showhidden [command]
+
+Toggle visibility of hidden files in macOS Finder.
+
+Commands:
+  on          Show hidden files
+  off         Hide hidden files
+  toggle      Toggle visibility
+  status      Show current status (default)
+
+Options:
+  -h, --help  Show this help
+
+Note: macOS only. Finder will be restarted.
+
+Examples:
+  showhidden              # Show current status
+  showhidden on           # Show hidden files
+  showhidden toggle       # Toggle visibility
+EOF
+}
+
+get_status() {
+    defaults read com.apple.finder AppleShowAllFiles 2>/dev/null || echo "false"
+}
+
+restart_finder() {
+    killall Finder 2>/dev/null || true
+}
+
+main() {
+    if ! is_mac; then
+        die "This script only works on macOS"
+    fi
+    
+    local command="${1:-status}"
+    
+    case "$command" in
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        on|show|true)
+            log_info "Showing hidden files..."
+            defaults write com.apple.finder AppleShowAllFiles -bool true
+            restart_finder
+            log_success "Hidden files are now visible"
+            ;;
+        off|hide|false)
+            log_info "Hiding hidden files..."
+            defaults write com.apple.finder AppleShowAllFiles -bool false
+            restart_finder
+            log_success "Hidden files are now hidden"
+            ;;
+        toggle|switch)
+            local current
+            current=$(get_status)
+            if [[ "$current" == "1" ]] || [[ "$current" == "true" ]]; then
+                log_info "Hiding hidden files..."
+                defaults write com.apple.finder AppleShowAllFiles -bool false
+                restart_finder
+                log_success "Hidden files are now hidden"
+            else
+                log_info "Showing hidden files..."
+                defaults write com.apple.finder AppleShowAllFiles -bool true
+                restart_finder
+                log_success "Hidden files are now visible"
+            fi
+            ;;
+        status|show)
+            local current
+            current=$(get_status)
+            if [[ "$current" == "1" ]] || [[ "$current" == "true" ]]; then
+                echo "Hidden files: visible"
+            else
+                echo "Hidden files: hidden"
+            fi
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

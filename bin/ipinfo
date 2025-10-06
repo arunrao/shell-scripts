@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# ipinfo - Show local and public IP information
+# Displays network interfaces, local IPs, public IP, and DNS info
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: ipinfo [options]
+
+Show local and public IP address information.
+
+Options:
+  -p, --public-only   Show only public IP
+  -l, --local-only    Show only local IPs
+  -h, --help         Show this help
+
+Features:
+  - Local network interfaces and IPs
+  - Public IP address
+  - Default gateway
+  - DNS servers (if available)
+
+Examples:
+  ipinfo                # Show all information
+  ipinfo --public-only  # Show only public IP
+  ipinfo --local-only   # Show only local IPs
+EOF
+}
+
+get_public_ip() {
+    local ip=""
+    
+    # Try multiple services
+    if have_cmd curl; then
+        ip=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null) || \
+        ip=$(curl -s --max-time 5 https://ifconfig.me 2>/dev/null) || \
+        ip=$(curl -s --max-time 5 https://icanhazip.com 2>/dev/null)
+    elif have_cmd wget; then
+        ip=$(wget -qO- --timeout=5 https://api.ipify.org 2>/dev/null) || \
+        ip=$(wget -qO- --timeout=5 https://ifconfig.me 2>/dev/null)
+    fi
+    
+    echo "$ip"
+}
+
+show_local_ips() {
+    echo "${BOLD}=== Local Network Interfaces ===${NC}"
+    echo ""
+    
+    if is_mac; then
+        ifconfig | grep -A 1 "flags=" | grep -v "^--"
+    else
+        if have_cmd ip; then
+            ip -br addr show | grep -v "^lo"
+        elif have_cmd ifconfig; then
+            ifconfig | grep -A 1 "flags=" | grep -v "^--"
+        fi
+    fi
+    
+    echo ""
+    echo "${BOLD}=== Default Gateway ===${NC}"
+    if is_mac; then
+        netstat -rn | grep default
+    else
+        if have_cmd ip; then
+            ip route | grep default
+        else
+            netstat -rn | grep "^0.0.0.0" | head -1
+        fi
+    fi
+}
+
+show_dns() {
+    echo ""
+    echo "${BOLD}=== DNS Servers ===${NC}"
+    
+    if [[ -f /etc/resolv.conf ]]; then
+        grep "^nameserver" /etc/resolv.conf
+    elif is_mac; then
+        scutil --dns | grep "nameserver" | head -5
+    else
+        log_warn "DNS information not available"
+    fi
+}
+
+main() {
+    local show_public=true
+    local show_local=true
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -p|--public-only)
+                show_local=false
+                shift
+                ;;
+            -l|--local-only)
+                show_public=false
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    if $show_local; then
+        show_local_ips
+        show_dns
+    fi
+    
+    if $show_public; then
+        [[ $show_local == true ]] && echo ""
+        echo "${BOLD}=== Public IP Address ===${NC}"
+        local public_ip
+        public_ip=$(get_public_ip)
+        
+        if [[ -n "$public_ip" ]]; then
+            echo "$public_ip"
+        else
+            log_error "Failed to retrieve public IP address"
+        fi
+    fi
+}
+
+main "$@"

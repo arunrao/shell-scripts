@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# gclean-branches - Prune merged branches safely
+# Removes local branches that have been merged
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: gclean-branches [options]
+
+Safely delete local branches that have been merged.
+
+Options:
+  -f, --force      Force delete without confirmation
+  -r, --remote     Also prune remote tracking branches
+  -h, --help       Show this help
+
+Features:
+  - Only deletes merged branches
+  - Preserves main/master and current branch
+  - Shows preview before deletion
+  - Optional remote pruning
+
+Examples:
+  gclean-branches           # Interactive cleanup
+  gclean-branches --force   # Delete without confirmation
+  gclean-branches --remote  # Also prune remote branches
+EOF
+}
+
+main() {
+    local force=false
+    local prune_remote=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            -r|--remote)
+                prune_remote=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    need_cmd git
+    
+    # Check if we're in a git repository
+    if ! git rev-parse --git-dir &>/dev/null; then
+        die "Not in a git repository"
+    fi
+    
+    # Get current branch
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD)
+    
+    # Determine main branch (main or master)
+    local main_branch="main"
+    if ! git show-ref --verify --quiet "refs/heads/main"; then
+        if git show-ref --verify --quiet "refs/heads/master"; then
+            main_branch="master"
+        fi
+    fi
+    
+    log_info "Current branch: $current_branch"
+    log_info "Main branch: $main_branch"
+    echo ""
+    
+    # Find merged branches
+    local merged_branches
+    merged_branches=$(git branch --merged "$main_branch" | \
+                      grep -v "^\*" | \
+                      grep -v "^\s*${main_branch}$" | \
+                      grep -v "^\s*master$" | \
+                      grep -v "^\s*main$" | \
+                      sed 's/^[* ] //' || true)
+    
+    if [[ -z "$merged_branches" ]]; then
+        log_success "No merged branches to clean up"
+        
+        if $prune_remote; then
+            log_info "Pruning remote tracking branches..."
+            git remote prune origin
+            log_success "Remote branches pruned"
+        fi
+        
+        exit 0
+    fi
+    
+    echo "Merged branches to delete:"
+    echo "$merged_branches" | sed 's/^/  - /'
+    echo ""
+    
+    if ! $force; then
+        if ! confirm "Delete these branches?" "n"; then
+            log_info "Cleanup cancelled"
+            exit 0
+        fi
+    fi
+    
+    # Delete merged branches
+    local deleted=0
+    while IFS= read -r branch; do
+        if [[ -n "$branch" ]]; then
+            log_info "Deleting: $branch"
+            if git branch -d "$branch"; then
+                ((deleted++))
+            else
+                log_warn "Failed to delete: $branch"
+            fi
+        fi
+    done <<< "$merged_branches"
+    
+    log_success "Deleted $deleted branch(es)"
+    
+    # Prune remote tracking branches if requested
+    if $prune_remote; then
+        echo ""
+        log_info "Pruning remote tracking branches..."
+        git remote prune origin
+        log_success "Remote branches pruned"
+    fi
+}
+
+main "$@"

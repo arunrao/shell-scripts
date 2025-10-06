@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# killdock - Restart macOS Dock and Finder
+# Force restart Dock, Finder, and other UI elements
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: killdock [options]
+
+Restart macOS Dock, Finder, and other UI components.
+
+Options:
+  -a, --all       Restart all UI components (Dock, Finder, SystemUIServer)
+  -d, --dock      Restart Dock only (default)
+  -f, --finder    Restart Finder only
+  -h, --help      Show this help
+
+Note: macOS only
+
+Examples:
+  killdock              # Restart Dock
+  killdock --all        # Restart Dock, Finder, and SystemUIServer
+  killdock --finder     # Restart Finder only
+EOF
+}
+
+main() {
+    if ! is_mac; then
+        die "This script only works on macOS"
+    fi
+    
+    local restart_dock=true
+    local restart_finder=false
+    local restart_systemui=false
+    
+    # Parse arguments
+    if [[ $# -eq 0 ]]; then
+        # Default: restart dock only
+        :
+    else
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -a|--all)
+                restart_dock=true
+                restart_finder=true
+                restart_systemui=true
+                ;;
+            -d|--dock)
+                restart_dock=true
+                restart_finder=false
+                restart_systemui=false
+                ;;
+            -f|--finder)
+                restart_dock=false
+                restart_finder=true
+                restart_systemui=false
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    fi
+    
+    # Restart components
+    if $restart_dock; then
+        log_info "Restarting Dock..."
+        killall Dock 2>/dev/null || log_warn "Dock not running"
+    fi
+    
+    if $restart_finder; then
+        log_info "Restarting Finder..."
+        killall Finder 2>/dev/null || log_warn "Finder not running"
+    fi
+    
+    if $restart_systemui; then
+        log_info "Restarting SystemUIServer..."
+        killall SystemUIServer 2>/dev/null || log_warn "SystemUIServer not running"
+    fi
+    
+    sleep 1
+    log_success "UI components restarted"
+}
+
+main "$@"

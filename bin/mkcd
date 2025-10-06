@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# mkcd - Make directory and cd into it
+# Creates a directory (with parents if needed) and changes to it
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: mkcd <directory>
+
+Create a directory (with parent directories if needed) and cd into it.
+
+Arguments:
+  <directory>  Path to directory to create
+
+Examples:
+  mkcd myproject
+  mkcd ~/projects/new-app
+  mkcd deeply/nested/directory
+
+Note: This script must be sourced to change your shell's directory:
+  source mkcd myproject
+  . mkcd myproject
+EOF
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_error "Directory path required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    local dir="$1"
+    
+    # Create directory if it doesn't exist
+    if [[ ! -d "$dir" ]]; then
+        ensure_dir "$dir"
+        log_success "Created directory: $dir"
+    else
+        log_info "Directory already exists: $dir"
+    fi
+    
+    # Change to directory
+    cd "$dir" || die "Failed to change to directory: $dir"
+    log_success "Changed to: $(pwd)"
+}
+
+main "$@"

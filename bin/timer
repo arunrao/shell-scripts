@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# timer - Simple CLI countdown timer
+# Countdown timer with visual feedback and alert
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: timer <duration> [message]
+
+Simple countdown timer with visual feedback.
+
+Arguments:
+  <duration>  Duration in seconds, or use suffixes: s, m, h
+              Examples: 30, 5m, 1h, 90s
+  [message]   Optional message to display when timer completes
+
+Features:
+  - Countdown display
+  - Visual progress
+  - Bell/notification when complete
+  - Handles interrupts gracefully
+
+Examples:
+  timer 60                    # 60 second timer
+  timer 5m                    # 5 minute timer
+  timer 1h "Meeting time!"    # 1 hour with message
+  timer 30s "Coffee ready"    # 30 seconds with message
+EOF
+}
+
+parse_duration() {
+    local input="$1"
+    local seconds=0
+    
+    # Check for suffix
+    if [[ "$input" =~ ^([0-9]+)s$ ]]; then
+        seconds="${BASH_REMATCH[1]}"
+    elif [[ "$input" =~ ^([0-9]+)m$ ]]; then
+        seconds=$((${BASH_REMATCH[1]} * 60))
+    elif [[ "$input" =~ ^([0-9]+)h$ ]]; then
+        seconds=$((${BASH_REMATCH[1]} * 3600))
+    elif [[ "$input" =~ ^[0-9]+$ ]]; then
+        seconds="$input"
+    else
+        return 1
+    fi
+    
+    echo "$seconds"
+}
+
+format_time() {
+    local total=$1
+    local hours=$((total / 3600))
+    local minutes=$(((total % 3600) / 60))
+    local seconds=$((total % 60))
+    
+    if [[ $hours -gt 0 ]]; then
+        printf "%02d:%02d:%02d" "$hours" "$minutes" "$seconds"
+    else
+        printf "%02d:%02d" "$minutes" "$seconds"
+    fi
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_error "Duration required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    local duration="$1"
+    local message="${2:-Timer complete!}"
+    
+    # Parse duration
+    local total_seconds
+    if ! total_seconds=$(parse_duration "$duration"); then
+        die "Invalid duration format: $duration"
+    fi
+    
+    if [[ $total_seconds -lt 1 ]]; then
+        die "Duration must be at least 1 second"
+    fi
+    
+    log_info "Starting timer: $(format_time $total_seconds)"
+    echo ""
+    
+    # Countdown loop
+    local remaining=$total_seconds
+    while [[ $remaining -gt 0 ]]; do
+        local percent=$((100 * (total_seconds - remaining) / total_seconds))
+        local bar_length=40
+        local filled=$((bar_length * percent / 100))
+        local empty=$((bar_length - filled))
+        
+        # Draw progress bar
+        printf "\r${CYAN}["
+        printf "%${filled}s" | tr ' ' '='
+        printf "%${empty}s" | tr ' ' ' '
+        printf "]${NC} ${BOLD}%s${NC} (%d%%)" "$(format_time $remaining)" "$percent"
+        
+        sleep 1
+        ((remaining--))
+    done
+    
+    # Complete
+    printf "\r${GREEN}["
+    printf "%${bar_length}s" | tr ' ' '='
+    printf "]${NC} ${BOLD}%s${NC} (100%%)\n" "00:00"
+    echo ""
+    
+    log_success "$message"
+    
+    # Try to make a sound
+    if is_mac; then
+        afplay /System/Library/Sounds/Glass.aiff 2>/dev/null || true
+    else
+        # Linux: try various methods
+        if have_cmd paplay; then
+            paplay /usr/share/sounds/freedesktop/stereo/complete.oga 2>/dev/null || true
+        elif have_cmd aplay; then
+            aplay /usr/share/sounds/alsa/Front_Center.wav 2>/dev/null || true
+        else
+            # Fallback: terminal bell
+            echo -e "\a"
+        fi
+    fi
+}
+
+# Handle interrupts
+trap 'echo ""; log_warn "Timer cancelled"; exit 130' INT TERM
+
+main "$@"

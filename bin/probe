@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# probe - Probe URL with detailed timing and TLS info
+# Performs HTTP request with timing, headers, and TLS certificate info
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: probe [options] <url>
+
+Probe a URL with detailed timing, TLS info, and optional retries.
+
+Arguments:
+  <url>         URL to probe
+
+Options:
+  -r, --retries NUM    Number of retries (default: 3)
+  -t, --timeout SEC    Timeout in seconds (default: 10)
+  -v, --verbose        Show verbose output
+  -h, --help          Show this help
+
+Features:
+  - HTTP timing breakdown (DNS, connect, TLS, transfer)
+  - TLS certificate information
+  - Response headers and status
+  - Automatic retries with exponential backoff
+
+Examples:
+  probe https://example.com
+  probe --retries 5 --timeout 30 https://api.example.com
+  probe -v https://example.com/api/health
+EOF
+}
+
+main() {
+    local url=""
+    local retries=3
+    local timeout=10
+    local verbose=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -r|--retries)
+                retries="$2"
+                shift 2
+                ;;
+            -t|--timeout)
+                timeout="$2"
+                shift 2
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                url="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    if [[ -z "$url" ]]; then
+        log_error "URL required"
+        show_usage
+        exit 1
+    fi
+    
+    need_cmd curl
+    
+    log_info "Probing: $url"
+    log_info "Retries: $retries | Timeout: ${timeout}s"
+    echo ""
+    
+    local attempt=1
+    local delay=2
+    
+    while [[ $attempt -le $retries ]]; do
+        log_info "Attempt $attempt/$retries..."
+        
+        local output
+        output=$(mktemp)
+        trap 'rm -f "$output"' EXIT
+        
+        # Perform curl with timing
+        if curl -w "\n\n--- Timing ---\nDNS Lookup:    %{time_namelookup}s\nTCP Connect:   %{time_connect}s\nTLS Handshake: %{time_appconnect}s\nStart Transfer:%{time_starttransfer}s\nTotal Time:    %{time_total}s\n\n--- Response ---\nHTTP Code:     %{http_code}\nSize:          %{size_download} bytes\n" \
+           --max-time "$timeout" \
+           ${verbose:+-v} \
+           -s -S -L \
+           -o "$output" \
+           "$url" 2>&1; then
+            
+            log_success "Request successful"
+            
+            # Show response body if verbose
+            if $verbose && [[ -s "$output" ]]; then
+                echo ""
+                echo "--- Response Body ---"
+                head -c 1000 "$output"
+                if [[ $(wc -c < "$output") -gt 1000 ]]; then
+                    echo "... (truncated)"
+                fi
+            fi
+            
+            # Show TLS info for HTTPS
+            if [[ "$url" =~ ^https:// ]]; then
+                echo ""
+                echo "--- TLS Certificate ---"
+                timeout 5 openssl s_client -connect "$(echo "$url" | sed -E 's|^https://([^/]+).*|\1|'):443" -servername "$(echo "$url" | sed -E 's|^https://([^/]+).*|\1|')" </dev/null 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>/dev/null || log_warn "Could not retrieve TLS info"
+            fi
+            
+            rm -f "$output"
+            return 0
+        fi
+        
+        if [[ $attempt -lt $retries ]]; then
+            log_warn "Request failed. Retrying in ${delay}s..."
+            sleep "$delay"
+            delay=$((delay * 2))
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    rm -f "$output"
+    die "All $retries attempts failed"
+}
+
+main "$@"

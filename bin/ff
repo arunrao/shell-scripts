@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# ff - Fuzzy find files
+# Uses fzf if available, falls back to find + grep
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: ff [pattern] [directory]
+
+Fuzzy find files using fzf, ripgrep, or standard find.
+
+Arguments:
+  [pattern]    File pattern to search for (optional with fzf)
+  [directory]  Directory to search in (default: current directory)
+
+Features:
+  - Uses fzf for interactive fuzzy finding if available
+  - Falls back to ripgrep or find + grep
+  - Respects .gitignore files (with ripgrep)
+
+Examples:
+  ff                    # Interactive fuzzy finder (requires fzf)
+  ff "*.js"            # Find all JavaScript files
+  ff "test" src/       # Find files matching "test" in src/
+  ff ".conf" /etc/     # Find config files in /etc/
+EOF
+}
+
+main() {
+    if [[ $# -gt 0 ]] && { [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; }; then
+        show_usage
+        exit 0
+    fi
+    
+    local pattern="${1:-}"
+    local dir="${2:-.}"
+    
+    if [[ ! -d "$dir" ]]; then
+        die "Directory does not exist: $dir"
+    fi
+    
+    # Method 1: fzf with ripgrep or fd
+    if have_cmd fzf; then
+        log_debug "Using fzf for fuzzy finding"
+        if have_cmd fd; then
+            fd --type f ${pattern:+--glob "*${pattern}*"} . "$dir" | fzf
+        elif have_cmd rg; then
+            rg --files ${pattern:+--glob "*${pattern}*"} "$dir" | fzf
+        else
+            find "$dir" -type f ${pattern:+-name "*${pattern}*"} 2>/dev/null | fzf
+        fi
+        return 0
+    fi
+    
+    # Method 2: ripgrep files mode
+    if have_cmd rg && [[ -n "$pattern" ]]; then
+        log_debug "Using ripgrep to find files"
+        rg --files --glob "*${pattern}*" "$dir"
+        return 0
+    fi
+    
+    # Method 3: Standard find
+    if [[ -n "$pattern" ]]; then
+        log_debug "Using find to search for pattern"
+        find "$dir" -type f -name "*${pattern}*" 2>/dev/null
+    else
+        log_info "No pattern provided and fzf not available"
+        log_info "Install fzf for interactive fuzzy finding or provide a pattern"
+        exit 1
+    fi
+}
+
+main "$@"

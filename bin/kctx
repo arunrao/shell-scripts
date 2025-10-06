@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# kctx - kubectl context switcher
+# Quick switch between kubectl contexts
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: kctx [context-name]
+
+Switch kubectl contexts or list available contexts.
+
+Arguments:
+  [context-name]  Context to switch to (optional)
+
+Options:
+  -l, --list      List all contexts
+  -c, --current   Show current context
+  -h, --help      Show this help
+
+Features:
+  - Lists all available contexts
+  - Shows current context
+  - Quick context switching
+  - Uses fzf for interactive selection if available
+
+Examples:
+  kctx                    # Interactive selection (with fzf)
+  kctx production         # Switch to production context
+  kctx --current          # Show current context
+  kctx --list            # List all contexts
+EOF
+}
+
+main() {
+    # Parse arguments
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -l|--list)
+                need_cmd kubectl
+                kubectl config get-contexts
+                exit 0
+                ;;
+            -c|--current)
+                need_cmd kubectl
+                kubectl config current-context
+                exit 0
+                ;;
+        esac
+    fi
+    
+    need_cmd kubectl
+    
+    # Get current context
+    local current
+    current=$(kubectl config current-context 2>/dev/null || echo "")
+    
+    if [[ -n "$current" ]]; then
+        log_info "Current context: $current"
+    fi
+    
+    # If context name provided, switch to it
+    if [[ $# -eq 1 ]]; then
+        local target="$1"
+        log_info "Switching to context: $target"
+        if kubectl config use-context "$target"; then
+            log_success "Switched to context: $target"
+        else
+            die "Failed to switch context"
+        fi
+        exit 0
+    fi
+    
+    # Interactive selection with fzf
+    if have_cmd fzf; then
+        local contexts
+        contexts=$(kubectl config get-contexts -o name)
+        
+        local selected
+        selected=$(echo "$contexts" | fzf --height 40% --reverse --prompt="Select context: ")
+        
+        if [[ -n "$selected" ]]; then
+            log_info "Switching to context: $selected"
+            if kubectl config use-context "$selected"; then
+                log_success "Switched to context: $selected"
+            else
+                die "Failed to switch context"
+            fi
+        fi
+    else
+        # No fzf, just list contexts
+        log_warn "Install fzf for interactive context selection"
+        echo ""
+        kubectl config get-contexts
+    fi
+}
+
+main "$@"

@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# jsonfmt - Pretty-print and validate JSON
+# Formats JSON with jq or python fallback
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: jsonfmt [file]
+
+Pretty-print and validate JSON from stdin or file.
+
+Arguments:
+  [file]  JSON file to format (optional, defaults to stdin)
+
+Options:
+  -c, --compact   Compact output (minimize whitespace)
+  -s, --sort      Sort object keys
+  -h, --help      Show this help
+
+Features:
+  - Validates JSON syntax
+  - Pretty-prints with colors (if terminal supports it)
+  - Uses jq if available, falls back to python
+  - Can read from file or stdin
+
+Examples:
+  echo '{"foo":"bar"}' | jsonfmt
+  jsonfmt data.json
+  cat data.json | jsonfmt --compact
+  jsonfmt --sort unsorted.json
+EOF
+}
+
+format_with_jq() {
+    local compact=$1
+    local sort=$2
+    local file=${3:-}
+    
+    local opts=""
+    if $compact; then
+        opts="$opts -c"
+    fi
+    if $sort; then
+        opts="$opts -S"
+    fi
+    
+    if [[ -n "$file" ]]; then
+        jq $opts '.' "$file"
+    else
+        jq $opts '.'
+    fi
+}
+
+format_with_python() {
+    local compact=$1
+    local sort=$2
+    local file=${3:-}
+    
+    local python_cmd="python3"
+    if ! have_cmd python3; then
+        python_cmd="python"
+    fi
+    
+    if $compact; then
+        if [[ -n "$file" ]]; then
+            "$python_cmd" -m json.tool --compact "$file"
+        else
+            "$python_cmd" -m json.tool --compact
+        fi
+    elif $sort; then
+        if [[ -n "$file" ]]; then
+            "$python_cmd" -m json.tool --sort-keys "$file"
+        else
+            "$python_cmd" -m json.tool --sort-keys
+        fi
+    else
+        if [[ -n "$file" ]]; then
+            "$python_cmd" -m json.tool "$file"
+        else
+            "$python_cmd" -m json.tool
+        fi
+    fi
+}
+
+main() {
+    local compact=false
+    local sort=false
+    local file=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -c|--compact)
+                compact=true
+                shift
+                ;;
+            -s|--sort)
+                sort=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                file="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate file if provided
+    if [[ -n "$file" ]] && [[ ! -f "$file" ]]; then
+        die "File not found: $file"
+    fi
+    
+    # Try jq first, fall back to python
+    if have_cmd jq; then
+        format_with_jq "$compact" "$sort" "$file"
+    elif have_cmd python3 || have_cmd python; then
+        format_with_python "$compact" "$sort" "$file"
+    else
+        die "No JSON formatter available. Please install jq or python"
+    fi
+}
+
+main "$@"

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# serve - Quick static HTTP server
+# Starts a simple HTTP server with smart fallbacks
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: serve [port] [directory]
+
+Start a simple HTTP server for static files.
+
+Arguments:
+  [port]       Port to serve on (default: 8000)
+  [directory]  Directory to serve (default: current directory)
+
+Features:
+  - Tries python3 http.server first
+  - Falls back to php built-in server
+  - Falls back to busybox httpd (if available)
+
+Examples:
+  serve                    # Serve current dir on port 8000
+  serve 3000              # Serve current dir on port 3000
+  serve 8080 ./public     # Serve ./public on port 8080
+EOF
+}
+
+main() {
+    if [[ $# -gt 0 ]] && { [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; }; then
+        show_usage
+        exit 0
+    fi
+    
+    local port="${1:-8000}"
+    local dir="${2:-.}"
+    
+    # Validate port
+    if ! is_integer "$port"; then
+        die "Invalid port number: $port"
+    fi
+    
+    # Validate directory
+    if [[ ! -d "$dir" ]]; then
+        die "Directory does not exist: $dir"
+    fi
+    
+    cd "$dir" || die "Failed to change to directory: $dir"
+    local abs_path
+    abs_path=$(pwd)
+    
+    log_info "Serving: $abs_path"
+    log_info "URL: http://localhost:$port"
+    log_warn "Press Ctrl+C to stop"
+    echo ""
+    
+    # Try python3 first
+    if have_cmd python3; then
+        log_info "Using Python 3 http.server"
+        python3 -m http.server "$port"
+        return 0
+    fi
+    
+    # Try python2
+    if have_cmd python2; then
+        log_info "Using Python 2 SimpleHTTPServer"
+        python2 -m SimpleHTTPServer "$port"
+        return 0
+    fi
+    
+    # Try python (unknown version)
+    if have_cmd python; then
+        log_info "Using Python http.server"
+        python -m http.server "$port" 2>/dev/null || python -m SimpleHTTPServer "$port"
+        return 0
+    fi
+    
+    # Try PHP
+    if have_cmd php; then
+        log_info "Using PHP built-in server"
+        php -S "localhost:$port"
+        return 0
+    fi
+    
+    # Try busybox
+    if have_cmd busybox && busybox httpd --help &>/dev/null; then
+        log_info "Using busybox httpd"
+        busybox httpd -f -p "$port"
+        return 0
+    fi
+    
+    die "No suitable HTTP server found. Please install python3, php, or busybox"
+}
+
+main "$@"

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# aws-whoami - Show current AWS identity
+# Displays current AWS credentials and configuration
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: aws-whoami [options]
+
+Show current AWS identity and configuration.
+
+Options:
+  -v, --verbose   Show additional details
+  -h, --help      Show this help
+
+Features:
+  - Current IAM user/role
+  - Account ID
+  - Region
+  - Profile (if set)
+  - Access key ID
+
+Examples:
+  aws-whoami              # Show basic info
+  aws-whoami --verbose    # Show detailed info
+EOF
+}
+
+main() {
+    local verbose=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    need_cmd aws
+    
+    echo "${BOLD}=== AWS Identity ===${NC}"
+    echo ""
+    
+    # Get caller identity
+    local identity
+    if ! identity=$(aws sts get-caller-identity --output json 2>&1); then
+        die "Failed to get AWS identity. Check your credentials."
+    fi
+    
+    # Extract info
+    local user_id
+    user_id=$(echo "$identity" | grep -o '"UserId": "[^"]*"' | cut -d'"' -f4 || echo "N/A")
+    local account
+    account=$(echo "$identity" | grep -o '"Account": "[^"]*"' | cut -d'"' -f4 || echo "N/A")
+    local arn
+    arn=$(echo "$identity" | grep -o '"Arn": "[^"]*"' | cut -d'"' -f4 || echo "N/A")
+    
+    echo "ARN:        $arn"
+    echo "User ID:    $user_id"
+    echo "Account:    $account"
+    
+    # Show region
+    local region
+    region=$(aws configure get region 2>/dev/null || echo "N/A")
+    echo "Region:     $region"
+    
+    # Show profile if set
+    if [[ -n "${AWS_PROFILE:-}" ]]; then
+        echo "Profile:    $AWS_PROFILE"
+    fi
+    
+    # Show access key (partial) if verbose
+    if $verbose; then
+        echo ""
+        echo "${BOLD}=== Configuration ===${NC}"
+        
+        local access_key
+        access_key=$(aws configure get aws_access_key_id 2>/dev/null || echo "N/A")
+        if [[ "$access_key" != "N/A" ]]; then
+            # Show only first 8 characters
+            echo "Access Key: ${access_key:0:8}..."
+        fi
+        
+        # Show output format
+        local output_format
+        output_format=$(aws configure get output 2>/dev/null || echo "json")
+        echo "Output:     $output_format"
+        
+        # Show available profiles
+        echo ""
+        echo "${BOLD}=== Available Profiles ===${NC}"
+        if [[ -f ~/.aws/credentials ]]; then
+            grep '^\[' ~/.aws/credentials | tr -d '[]'
+        else
+            echo "No profiles found"
+        fi
+    fi
+}
+
+main "$@"

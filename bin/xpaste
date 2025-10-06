@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# xpaste - Cross-platform clipboard paste
+# Pastes clipboard contents to stdout
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: xpaste
+
+Paste clipboard contents to stdout (cross-platform).
+
+Examples:
+  xpaste                           Paste to stdout
+  xpaste > file.txt                Paste to file
+  xpaste | grep "search"           Paste and filter
+  
+Supports:
+  - macOS: pbpaste
+  - Linux (Wayland): wl-paste
+  - Linux (X11): xclip or xsel
+EOF
+}
+
+main() {
+    # Parse arguments
+    if [[ $# -gt 0 ]] && { [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; }; then
+        show_usage
+        exit 0
+    fi
+    
+    if [[ $# -gt 0 ]]; then
+        log_error "Too many arguments"
+        show_usage
+        exit 1
+    fi
+    
+    # Get appropriate clipboard command
+    local clip_cmd
+    if ! clip_cmd=$(get_clipboard_cmd "paste"); then
+        die "No clipboard command available. Please install: xclip, xsel, or wl-clipboard"
+    fi
+    
+    # Paste from clipboard
+    eval "$clip_cmd"
+}
+
+main "$@"

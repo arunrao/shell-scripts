@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# bcopy - Batch copy files recursively with backup
+# Copies all files from source to destination directory, backing up existing files
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: bcopy <source-dir> <dest-dir>
+
+Batch copy all files recursively from source to destination directory.
+Existing files are automatically backed up.
+
+Arguments:
+  <source-dir>  Absolute path to source directory
+  <dest-dir>    Absolute path to destination directory
+
+Features:
+  - Backs up existing files in destination (appends number suffix)
+  - Creates backup folder in source directory for reference
+  - Preserves directory structure
+  - Interactive confirmation before copying
+
+Examples:
+  bcopy /path/to/source /path/to/dest
+EOF
+}
+
+main() {
+    # Parse arguments
+    if [[ $# -lt 2 ]]; then
+        log_error "Invalid number of arguments"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    local src="$1"
+    local dest="$2"
+    local tmpfile="/tmp/bcopy.$$.txt"
+    local currdir
+    currdir="$(pwd)"
+    
+    # Validate source directory
+    if [[ ! -d "$src" ]]; then
+        die "Source directory does not exist: $src"
+    fi
+    
+    # Validate or create destination directory
+    if [[ ! -d "$dest" ]]; then
+        log_warn "Destination directory does not exist: $dest"
+        if ! confirm "Create destination directory?" "n"; then
+            die "Destination directory required"
+        fi
+        ensure_dir "$dest"
+    fi
+    
+    # Clean up temp file if it exists
+    trap 'rm -f "$tmpfile"' EXIT
+    
+    # Find all files in source directory
+    log_info "Scanning source directory..."
+    (cd "$src" && find . -type f | sed 's|^./||') > "$tmpfile"
+    
+    local file_count
+    file_count=$(wc -l < "$tmpfile" | trim)
+    
+    if [[ "$file_count" -eq 0 ]]; then
+        die "No files found in source directory"
+    fi
+    
+    log_info "Found $file_count files to copy"
+    
+    # Confirm operation
+    if ! confirm "Copy all files from $src to $dest?" "n"; then
+        log_info "Operation cancelled"
+        exit 0
+    fi
+    
+    # Create backup folder in source directory
+    local backup_dir="$src/backup"
+    ensure_dir "$backup_dir"
+    log_info "Backup directory: $backup_dir"
+    
+    local copied=0
+    local backed_up=0
+    
+    # Process each file
+    while IFS= read -r path; do
+        local srcfile="$src/$path"
+        local tgtfile="$dest/$path"
+        local subdir
+        subdir=$(dirname "$path")
+        
+        # Create subdirectory in destination
+        ensure_dir "$dest/$subdir"
+        
+        # If target file exists, back it up
+        if [[ -f "$tgtfile" ]]; then
+            # Find next available backup number
+            local c=""
+            while [[ -e "$tgtfile$c" ]]; do
+                if [[ -z "$c" ]]; then
+                    c=1
+                else
+                    ((c++))
+                fi
+            done
+            
+            # Backup in destination with number suffix
+            cp "$tgtfile" "$tgtfile$c"
+            
+            # Backup in source backup folder with original name
+            ensure_dir "$backup_dir/$subdir"
+            cp "$tgtfile" "$backup_dir/$path"
+            
+            ((backed_up++))
+            log_debug "Backed up: $path"
+        fi
+        
+        # Copy source to target
+        cp "$srcfile" "$tgtfile"
+        ((copied++))
+        
+        if [[ $((copied % 100)) -eq 0 ]]; then
+            log_info "Copied $copied/$file_count files..."
+        fi
+    done < "$tmpfile"
+    
+    cd "$currdir"
+    
+    log_success "Completed: $copied files copied, $backed_up files backed up"
+}
+
+main "$@"

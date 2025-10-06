@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# ports - List listening ports
+# Shows all listening TCP/UDP ports with smart fallbacks
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: ports [options]
+
+List all listening TCP/UDP ports on the system.
+
+Options:
+  -t, --tcp     Show only TCP ports
+  -u, --udp     Show only UDP ports
+  -h, --help    Show this help
+
+Features:
+  - Uses ss (preferred) or lsof or netstat
+  - Shows port, protocol, and process name
+  - Cross-platform (Linux, macOS)
+
+Examples:
+  ports          # Show all listening ports
+  ports --tcp    # Show only TCP ports
+  ports --udp    # Show only UDP ports
+EOF
+}
+
+main() {
+    local show_tcp=true
+    local show_udp=true
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -t|--tcp)
+                show_udp=false
+                shift
+                ;;
+            -u|--udp)
+                show_tcp=false
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    log_info "Listening ports on $(hostname)"
+    echo ""
+    
+    # Method 1: ss (modern, preferred)
+    if have_cmd ss; then
+        log_debug "Using ss"
+        local opts="-lptn"
+        if $show_tcp && $show_udp; then
+            ss -lptn 2>/dev/null || sudo ss -lptn
+            echo ""
+            ss -lpun 2>/dev/null || sudo ss -lpun
+        elif $show_tcp; then
+            ss -lptn 2>/dev/null || sudo ss -lptn
+        elif $show_udp; then
+            ss -lpun 2>/dev/null || sudo ss -lpun
+        fi
+        return 0
+    fi
+    
+    # Method 2: lsof (works on macOS and Linux)
+    if have_cmd lsof; then
+        log_debug "Using lsof"
+        if $show_tcp && $show_udp; then
+            sudo lsof -iTCP -sTCP:LISTEN -P -n
+            echo ""
+            sudo lsof -iUDP -P -n
+        elif $show_tcp; then
+            sudo lsof -iTCP -sTCP:LISTEN -P -n
+        elif $show_udp; then
+            sudo lsof -iUDP -P -n
+        fi
+        return 0
+    fi
+    
+    # Method 3: netstat (fallback, older)
+    if have_cmd netstat; then
+        log_debug "Using netstat"
+        if is_mac; then
+            if $show_tcp && $show_udp; then
+                netstat -anv -p tcp | grep LISTEN
+                echo ""
+                netstat -anv -p udp
+            elif $show_tcp; then
+                netstat -anv -p tcp | grep LISTEN
+            elif $show_udp; then
+                netstat -anv -p udp
+            fi
+        else
+            # Linux netstat
+            local opts="-lpn"
+            if $show_tcp && $show_udp; then
+                netstat -ltpn 2>/dev/null || sudo netstat -ltpn
+                echo ""
+                netstat -lupn 2>/dev/null || sudo netstat -lupn
+            elif $show_tcp; then
+                netstat -ltpn 2>/dev/null || sudo netstat -ltpn
+            elif $show_udp; then
+                netstat -lupn 2>/dev/null || sudo netstat -lupn
+            fi
+        fi
+        return 0
+    fi
+    
+    die "No suitable command found (ss, lsof, or netstat required)"
+}
+
+main "$@"

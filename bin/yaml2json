@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# yaml2json - Convert YAML to JSON
+# Uses yq or python fallback
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: yaml2json [file]
+
+Convert YAML to JSON from stdin or file.
+
+Arguments:
+  [file]  YAML file to convert (optional, defaults to stdin)
+
+Options:
+  -p, --pretty    Pretty-print output
+  -h, --help      Show this help
+
+Features:
+  - Converts YAML to JSON
+  - Uses yq if available, falls back to python
+  - Can read from file or stdin
+
+Examples:
+  echo 'foo: bar' | yaml2json
+  yaml2json config.yaml
+  yaml2json --pretty config.yaml > config.json
+EOF
+}
+
+main() {
+    local pretty=false
+    local file=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -p|--pretty)
+                pretty=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                file="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate file if provided
+    if [[ -n "$file" ]] && [[ ! -f "$file" ]]; then
+        die "File not found: $file"
+    fi
+    
+    # Try yq first
+    if have_cmd yq; then
+        if [[ -n "$file" ]]; then
+            if $pretty; then
+                yq eval -o=json "$file" | jq '.' 2>/dev/null || yq eval -o=json "$file"
+            else
+                yq eval -o=json "$file"
+            fi
+        else
+            if $pretty; then
+                yq eval -o=json | jq '.' 2>/dev/null || yq eval -o=json
+            else
+                yq eval -o=json
+            fi
+        fi
+    elif have_cmd python3; then
+        # Python fallback with PyYAML
+        python3 -c "
+import sys, yaml, json
+try:
+    data = yaml.safe_load(sys.stdin if not '$file' else open('$file'))
+    print(json.dumps(data, indent=2 if $pretty else None))
+except Exception as e:
+    sys.stderr.write(f'Error: {e}\n')
+    sys.exit(1)
+" < "${file:-/dev/stdin}"
+    else
+        die "No YAML converter available. Please install yq or python3 with PyYAML"
+    fi
+}
+
+main "$@"

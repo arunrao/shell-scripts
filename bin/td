@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# td - Tiny todo list manager
+# Simple plaintext todo list
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+# Default todo file location
+TODO_FILE="${TODO_FILE:-$HOME/.todos.txt}"
+
+show_usage() {
+    cat <<EOF
+Usage: td [command] [args]
+
+Simple plaintext todo list manager.
+
+Commands:
+  add <text>      Add a new todo
+  list            List all todos (default)
+  done <number>   Mark todo as done
+  remove <number> Remove a todo
+  search <text>   Search todos
+  clear           Clear completed todos
+
+Options:
+  -f, --file FILE  Use custom todo file (default: ~/.todos.txt)
+  -h, --help       Show this help
+
+Environment:
+  TODO_FILE       Default todo file location
+
+Examples:
+  td add "Buy groceries"
+  td list
+  td done 1
+  td search "meeting"
+  td remove 3
+  td clear
+  
+  # Use custom file
+  td -f work.txt add "Finish report"
+EOF
+}
+
+ensure_todo_file() {
+    if [[ ! -f "$TODO_FILE" ]]; then
+        touch "$TODO_FILE"
+    fi
+}
+
+list_todos() {
+    ensure_todo_file
+    
+    if [[ ! -s "$TODO_FILE" ]]; then
+        log_info "No todos yet. Add one with: td add <text>"
+        return
+    fi
+    
+    local line_num=1
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\[x\]  ]]; then
+            # Completed todo (strikethrough if terminal supports it)
+            echo -e "${line_num}. ${GREEN}[✓]${NC} ${line:4}"
+        else
+            # Pending todo
+            echo -e "${line_num}. ${YELLOW}[ ]${NC} ${line:4}"
+        fi
+        ((line_num++))
+    done < "$TODO_FILE"
+}
+
+add_todo() {
+    local text="$*"
+    if [[ -z "$text" ]]; then
+        die "Todo text required"
+    fi
+    
+    ensure_todo_file
+    echo "[ ] $text" >> "$TODO_FILE"
+    log_success "Added: $text"
+}
+
+mark_done() {
+    local num="$1"
+    
+    if ! is_integer "$num"; then
+        die "Invalid todo number: $num"
+    fi
+    
+    ensure_todo_file
+    local total
+    total=$(wc -l < "$TODO_FILE" | trim)
+    
+    if [[ $num -lt 1 ]] || [[ $num -gt $total ]]; then
+        die "Todo number out of range: $num (1-$total)"
+    fi
+    
+    # Mark as done
+    local line
+    line=$(sed -n "${num}p" "$TODO_FILE")
+    if [[ "$line" =~ ^\[x\]  ]]; then
+        log_warn "Todo #$num already marked as done"
+        return
+    fi
+    
+    sed -i.bak "${num}s/^\[ \]/[x]/" "$TODO_FILE"
+    rm -f "$TODO_FILE.bak"
+    
+    log_success "Marked done: ${line:4}"
+}
+
+remove_todo() {
+    local num="$1"
+    
+    if ! is_integer "$num"; then
+        die "Invalid todo number: $num"
+    fi
+    
+    ensure_todo_file
+    local total
+    total=$(wc -l < "$TODO_FILE" | trim)
+    
+    if [[ $num -lt 1 ]] || [[ $num -gt $total ]]; then
+        die "Todo number out of range: $num (1-$total)"
+    fi
+    
+    # Get todo text for confirmation
+    local line
+    line=$(sed -n "${num}p" "$TODO_FILE")
+    
+    log_warn "Removing: ${line:4}"
+    if confirm "Are you sure?" "n"; then
+        sed -i.bak "${num}d" "$TODO_FILE"
+        rm -f "$TODO_FILE.bak"
+        log_success "Removed todo #$num"
+    else
+        log_info "Cancelled"
+    fi
+}
+
+search_todos() {
+    local query="$*"
+    if [[ -z "$query" ]]; then
+        die "Search query required"
+    fi
+    
+    ensure_todo_file
+    
+    log_info "Searching for: $query"
+    echo ""
+    
+    local line_num=1
+    local found=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ $query ]] || [[ "${line,,}" =~ ${query,,} ]]; then
+            if [[ "$line" =~ ^\[x\]  ]]; then
+                echo -e "${line_num}. ${GREEN}[✓]${NC} ${line:4}"
+            else
+                echo -e "${line_num}. ${YELLOW}[ ]${NC} ${line:4}"
+            fi
+            ((found++))
+        fi
+        ((line_num++))
+    done < "$TODO_FILE"
+    
+    if [[ $found -eq 0 ]]; then
+        log_warn "No todos found matching: $query"
+    fi
+}
+
+clear_completed() {
+    ensure_todo_file
+    
+    local completed
+    completed=$(grep -c '^\[x\]' "$TODO_FILE" || echo "0")
+    
+    if [[ $completed -eq 0 ]]; then
+        log_info "No completed todos to clear"
+        return
+    fi
+    
+    log_info "Found $completed completed todo(s)"
+    if confirm "Clear all completed todos?" "y"; then
+        grep -v '^\[x\]' "$TODO_FILE" > "$TODO_FILE.tmp"
+        mv "$TODO_FILE.tmp" "$TODO_FILE"
+        log_success "Cleared $completed completed todo(s)"
+    else
+        log_info "Cancelled"
+    fi
+}
+
+main() {
+    # Parse global options
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--file)
+                TODO_FILE="$2"
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    
+    local command="${1:-list}"
+    shift || true
+    
+    case "$command" in
+        add|a)
+            add_todo "$@"
+            ;;
+        list|ls|l)
+            list_todos
+            ;;
+        done|do|d)
+            if [[ $# -eq 0 ]]; then
+                die "Todo number required"
+            fi
+            mark_done "$1"
+            ;;
+        remove|rm|r)
+            if [[ $# -eq 0 ]]; then
+                die "Todo number required"
+            fi
+            remove_todo "$1"
+            ;;
+        search|find|grep|s)
+            search_todos "$@"
+            ;;
+        clear|clean|c)
+            clear_completed
+            ;;
+        *)
+            log_error "Unknown command: $command"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

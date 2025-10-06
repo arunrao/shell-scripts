@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# gdirty - Show uncommitted files across git repositories
+# Recursively finds git repos and shows their dirty status
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: gdirty [directory] [max-depth]
+
+Find all git repositories with uncommitted changes.
+
+Arguments:
+  [directory]  Directory to search (default: current directory)
+  [max-depth]  Maximum depth to search (default: 3)
+
+Features:
+  - Recursively searches for git repositories
+  - Shows repos with uncommitted changes
+  - Shows repos with unpushed commits
+  - Colorized output for easy scanning
+
+Examples:
+  gdirty                    # Search current directory
+  gdirty ~/projects         # Search projects directory
+  gdirty ~/projects 5       # Search with depth 5
+EOF
+}
+
+check_repo() {
+    local repo_path="$1"
+    local repo_name
+    repo_name=$(basename "$repo_path")
+    
+    cd "$repo_path" || return
+    
+    # Check if there are uncommitted changes
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        echo -e "${RED}✗${NC} ${BOLD}$repo_path${NC}"
+        echo "  Uncommitted changes:"
+        git status --short | head -10 | sed 's/^/    /'
+        echo ""
+        return 0
+    fi
+    
+    # Check if there are unpushed commits
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [[ -n "$branch" ]]; then
+        local unpushed
+        unpushed=$(git log "origin/$branch..$branch" --oneline 2>/dev/null | wc -l | trim)
+        if [[ "$unpushed" -gt 0 ]]; then
+            echo -e "${YELLOW}↑${NC} ${BOLD}$repo_path${NC}"
+            echo "  $unpushed unpushed commit(s) on $branch"
+            git log "origin/$branch..$branch" --oneline 2>/dev/null | head -5 | sed 's/^/    /'
+            echo ""
+            return 0
+        fi
+    fi
+    
+    # Check for untracked files
+    if [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+        echo -e "${CYAN}?${NC} ${BOLD}$repo_path${NC}"
+        echo "  Untracked files:"
+        git ls-files --others --exclude-standard | head -10 | sed 's/^/    /'
+        echo ""
+        return 0
+    fi
+}
+
+main() {
+    if [[ $# -gt 0 ]] && { [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; }; then
+        show_usage
+        exit 0
+    fi
+    
+    local search_dir="${1:-.}"
+    local max_depth="${2:-3}"
+    
+    if [[ ! -d "$search_dir" ]]; then
+        die "Directory does not exist: $search_dir"
+    fi
+    
+    need_cmd git
+    
+    log_info "Searching for git repositories in: $search_dir (depth: $max_depth)"
+    echo ""
+    
+    local found=0
+    local clean=0
+    
+    # Find all .git directories
+    while IFS= read -r -d '' git_dir; do
+        local repo_dir
+        repo_dir=$(dirname "$git_dir")
+        
+        ((found++))
+        
+        if check_repo "$repo_dir"; then
+            : # Repository has issues
+        else
+            ((clean++))
+        fi
+    done < <(find "$search_dir" -maxdepth "$max_depth" -type d -name ".git" -print0 2>/dev/null)
+    
+    if [[ $found -eq 0 ]]; then
+        log_warn "No git repositories found"
+    else
+        local dirty=$((found - clean))
+        if [[ $dirty -eq 0 ]]; then
+            log_success "All $found repositories are clean"
+        else
+            log_info "Found $dirty repository/repositories with changes (out of $found total)"
+        fi
+    fi
+}
+
+main "$@"

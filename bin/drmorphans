@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# drmorphans - Remove orphaned Docker images
+# Removes dangling images and optionally unused images
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: drmorphans [options]
+
+Remove orphaned/dangling Docker images.
+
+Options:
+  -a, --all       Remove all unused images (not just dangling)
+  -f, --force     Force removal without confirmation
+  -h, --help      Show this help
+
+Features:
+  - Removes dangling images (default)
+  - Optionally removes all unused images
+  - Shows space reclaimed
+
+Examples:
+  drmorphans              # Remove dangling images
+  drmorphans --all        # Remove all unused images
+  drmorphans -af          # Force remove all unused
+EOF
+}
+
+main() {
+    local force=false
+    local all=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            -a|--all)
+                all=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    if $all; then
+        log_info "Finding all unused images..."
+        local unused
+        unused=$(docker images -f "dangling=false" -q --filter "dangling=false" | wc -l | trim)
+        
+        if [[ "$unused" -eq 0 ]]; then
+            log_info "No unused images found"
+            exit 0
+        fi
+        
+        log_warn "This will remove ALL unused images (not just dangling)"
+        
+        if ! $force; then
+            if ! confirm "Remove all unused images?" "n"; then
+                log_info "Operation cancelled"
+                exit 0
+            fi
+        fi
+        
+        log_info "Removing unused images..."
+        docker image prune -a -f
+    else
+        log_info "Finding dangling images..."
+        local dangling
+        dangling=$(docker images -f "dangling=true" -q | wc -l | trim)
+        
+        if [[ "$dangling" -eq 0 ]]; then
+            log_info "No dangling images found"
+            exit 0
+        fi
+        
+        log_info "Found $dangling dangling image(s)"
+        
+        if ! $force; then
+            if ! confirm "Remove dangling images?" "y"; then
+                log_info "Operation cancelled"
+                exit 0
+            fi
+        fi
+        
+        log_info "Removing dangling images..."
+        docker image prune -f
+    fi
+    
+    log_success "Cleanup complete"
+}
+
+main "$@"

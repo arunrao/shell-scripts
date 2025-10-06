@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# backup - Create safe timestamped backup with checksums
+# Copies files/directories with timestamp and generates checksums
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: backup <source> [destination]
+
+Create a timestamped backup of a file or directory with checksums.
+
+Arguments:
+  <source>       File or directory to backup
+  [destination]  Backup location (default: current directory)
+
+Features:
+  - Timestamped backups (YYYYMMDD_HHMMSS format)
+  - SHA256 checksums for verification
+  - Preserves permissions and metadata
+  - Creates compressed archives for directories
+
+Examples:
+  backup myfile.txt
+  backup /etc/nginx/nginx.conf ~/backups/
+  backup ~/important-project ~/backups/
+EOF
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_error "Source path required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    local source="$1"
+    local dest_dir="${2:-.}"
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    
+    # Validate source
+    if [[ ! -e "$source" ]]; then
+        die "Source does not exist: $source"
+    fi
+    
+    # Validate/create destination
+    ensure_dir "$dest_dir"
+    
+    local basename
+    basename=$(basename "$source")
+    
+    if [[ -f "$source" ]]; then
+        # Backup a file
+        local backup_file="$dest_dir/${basename}.${timestamp}.bak"
+        local checksum_file="${backup_file}.sha256"
+        
+        log_info "Backing up file: $source"
+        cp -p "$source" "$backup_file"
+        
+        # Generate checksum
+        if have_cmd shasum; then
+            shasum -a 256 "$backup_file" > "$checksum_file"
+        elif have_cmd sha256sum; then
+            sha256sum "$backup_file" > "$checksum_file"
+        fi
+        
+        log_success "Backup created: $backup_file"
+        [[ -f "$checksum_file" ]] && log_info "Checksum: $checksum_file"
+        
+    elif [[ -d "$source" ]]; then
+        # Backup a directory
+        local backup_archive="$dest_dir/${basename}.${timestamp}.tar.gz"
+        local checksum_file="${backup_archive}.sha256"
+        
+        log_info "Backing up directory: $source"
+        tar -czf "$backup_archive" -C "$(dirname "$source")" "$basename"
+        
+        # Generate checksum
+        if have_cmd shasum; then
+            shasum -a 256 "$backup_archive" > "$checksum_file"
+        elif have_cmd sha256sum; then
+            sha256sum "$backup_archive" > "$checksum_file"
+        fi
+        
+        log_success "Backup created: $backup_archive"
+        log_info "Checksum: $checksum_file"
+        
+        # Show size
+        local size
+        if have_cmd du; then
+            size=$(du -h "$backup_archive" | cut -f1)
+            log_info "Size: $size"
+        fi
+    fi
+}
+
+main "$@"

@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# kns - kubectl namespace switcher
+# Quick switch between kubectl namespaces
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: kns [namespace]
+
+Switch kubectl namespace or list available namespaces.
+
+Arguments:
+  [namespace]  Namespace to switch to (optional)
+
+Options:
+  -l, --list      List all namespaces
+  -c, --current   Show current namespace
+  -h, --help      Show this help
+
+Features:
+  - Lists all available namespaces
+  - Shows current namespace
+  - Quick namespace switching
+  - Uses fzf for interactive selection if available
+
+Examples:
+  kns                     # Interactive selection (with fzf)
+  kns production          # Switch to production namespace
+  kns --current           # Show current namespace
+  kns --list             # List all namespaces
+EOF
+}
+
+get_current_namespace() {
+    kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || echo "default"
+}
+
+main() {
+    # Parse arguments
+    if [[ $# -gt 0 ]]; then
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -l|--list)
+                need_cmd kubectl
+                kubectl get namespaces -o name | sed 's|^namespace/||'
+                exit 0
+                ;;
+            -c|--current)
+                need_cmd kubectl
+                get_current_namespace
+                exit 0
+                ;;
+        esac
+    fi
+    
+    need_cmd kubectl
+    
+    # Get current namespace
+    local current
+    current=$(get_current_namespace)
+    
+    log_info "Current namespace: $current"
+    
+    # If namespace provided, switch to it
+    if [[ $# -eq 1 ]]; then
+        local target="$1"
+        log_info "Switching to namespace: $target"
+        if kubectl config set-context --current --namespace="$target"; then
+            log_success "Switched to namespace: $target"
+        else
+            die "Failed to switch namespace"
+        fi
+        exit 0
+    fi
+    
+    # Interactive selection with fzf
+    if have_cmd fzf; then
+        local namespaces
+        namespaces=$(kubectl get namespaces -o name | sed 's|^namespace/||')
+        
+        local selected
+        selected=$(echo "$namespaces" | fzf --height 40% --reverse --prompt="Select namespace: ")
+        
+        if [[ -n "$selected" ]]; then
+            log_info "Switching to namespace: $selected"
+            if kubectl config set-context --current --namespace="$selected"; then
+                log_success "Switched to namespace: $selected"
+            else
+                die "Failed to switch namespace"
+            fi
+        fi
+    else
+        # No fzf, just list namespaces
+        log_warn "Install fzf for interactive namespace selection"
+        echo ""
+        kubectl get namespaces
+    fi
+}
+
+main "$@"

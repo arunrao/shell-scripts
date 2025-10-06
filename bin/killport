@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# killport - Kill process listening on a specific port
+# Quick way to free up ports during development
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: killport <port> [options]
+
+Kill the process listening on a specific port.
+
+Arguments:
+  <port>  Port number (1-65535)
+
+Options:
+  -f, --force     Force kill (SIGKILL) without confirmation
+  -9              Same as --force
+  -l, --list      List all listening ports
+  -h, --help      Show this help
+
+Features:
+  - Finds process using the port
+  - Shows process details before killing
+  - Confirmation prompt (unless --force)
+  - Works with TCP and UDP
+
+Examples:
+  killport 3000           # Kill process on port 3000
+  killport 8080 --force   # Force kill without confirmation
+  killport -9 3000        # Force kill (SIGKILL)
+  killport --list         # Show all listening ports
+
+Common ports:
+  3000  - Node.js dev servers
+  8080  - HTTP alternate
+  5432  - PostgreSQL
+  3306  - MySQL
+  6379  - Redis
+  27017 - MongoDB
+EOF
+}
+
+list_ports() {
+    log_info "Listening ports:"
+    echo ""
+    
+    if have_cmd lsof; then
+        lsof -iTCP -sTCP:LISTEN -P -n | head -20
+    elif have_cmd netstat; then
+        netstat -an | grep LISTEN | head -20
+    else
+        die "No suitable command found (lsof or netstat required)"
+    fi
+}
+
+get_process_info() {
+    local port="$1"
+    
+    if have_cmd lsof; then
+        lsof -ti:"$port" 2>/dev/null
+    else
+        die "lsof command not found"
+    fi
+}
+
+get_process_details() {
+    local pid="$1"
+    
+    if [[ -z "$pid" ]]; then
+        return 1
+    fi
+    
+    if have_cmd ps; then
+        ps -p "$pid" -o pid,ppid,user,%cpu,%mem,command 2>/dev/null
+    fi
+}
+
+kill_process() {
+    local pid="$1"
+    local force="$2"
+    local port="$3"
+    
+    if [[ -z "$pid" ]]; then
+        log_warn "No process found listening on port $port"
+        return 1
+    fi
+    
+    # Show process details
+    log_info "Process on port $port:"
+    echo ""
+    get_process_details "$pid"
+    echo ""
+    
+    # Confirm unless force
+    if [[ "$force" != "true" ]]; then
+        if ! confirm "Kill this process (PID $pid)?" "y"; then
+            log_info "Cancelled"
+            return 1
+        fi
+    fi
+    
+    # Kill the process
+    if [[ "$force" == "true" ]]; then
+        log_info "Force killing process $pid..."
+        if kill -9 "$pid" 2>/dev/null; then
+            log_success "Process killed (port $port freed)"
+            return 0
+        else
+            log_error "Failed to kill process $pid (may require sudo)"
+            return 1
+        fi
+    else
+        log_info "Killing process $pid..."
+        if kill "$pid" 2>/dev/null; then
+            log_success "Process killed (port $port freed)"
+            return 0
+        else
+            log_error "Failed to kill process $pid (may require sudo)"
+            log_info "Try: killport $port --force"
+            return 1
+        fi
+    fi
+}
+
+main() {
+    local port=""
+    local force=false
+    
+    if [[ $# -eq 0 ]]; then
+        log_error "Port number required"
+        show_usage
+        exit 1
+    fi
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -l|--list)
+                list_ports
+                exit 0
+                ;;
+            -f|--force|-9)
+                force=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                port="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate port
+    if [[ -z "$port" ]]; then
+        log_error "Port number required"
+        show_usage
+        exit 1
+    fi
+    
+    if ! is_integer "$port"; then
+        die "Invalid port number: $port"
+    fi
+    
+    if [[ $port -lt 1 ]] || [[ $port -gt 65535 ]]; then
+        die "Port must be between 1 and 65535"
+    fi
+    
+    # Get process using the port
+    local pids
+    pids=$(get_process_info "$port")
+    
+    if [[ -z "$pids" ]]; then
+        log_warn "No process found listening on port $port"
+        exit 1
+    fi
+    
+    # Kill each process (usually just one)
+    local killed=0
+    local failed=0
+    
+    while IFS= read -r pid; do
+        if [[ -n "$pid" ]]; then
+            if kill_process "$pid" "$force" "$port"; then
+                ((killed++))
+            else
+                ((failed++))
+            fi
+        fi
+    done <<< "$pids"
+    
+    if [[ $failed -gt 0 ]]; then
+        exit 1
+    fi
+}
+
+main "$@"

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# gsed - Portable sed wrapper
+# Uses GNU sed (gsed) on macOS if available, otherwise falls back to sed
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: gsed [sed-options] <pattern> [file]
+
+Portable sed wrapper that prefers GNU sed for consistency.
+
+Features:
+  - Uses gsed (GNU sed) on macOS if installed
+  - Falls back to system sed on other platforms
+  - Provides consistent behavior across platforms
+
+Examples:
+  gsed 's/old/new/g' file.txt
+  echo "hello" | gsed 's/hello/world/'
+  gsed -i 's/foo/bar/g' file.txt
+
+Note: 
+  On macOS, install GNU sed for full compatibility:
+    brew install gnu-sed
+EOF
+}
+
+main() {
+    if [[ $# -gt 0 ]] && { [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]] || [[ "$1" == "--version" ]]; }; then
+        show_usage
+        echo ""
+    fi
+    
+    local sed_cmd="sed"
+    
+    # On macOS, prefer GNU sed if available
+    if is_mac; then
+        if have_cmd gsed; then
+            sed_cmd="gsed"
+            log_debug "Using GNU sed (gsed)"
+        else
+            log_debug "Using BSD sed (consider installing gnu-sed: brew install gnu-sed)"
+        fi
+    fi
+    
+    # Execute sed with all arguments
+    "$sed_cmd" "$@"
+}
+
+main "$@"

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# uniqs - Show unique lines with counts
+# Portable unique line counter with sorting
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: uniqs [file]
+
+Show unique lines with occurrence counts from stdin or file.
+
+Arguments:
+  [file]  File to analyze (optional, defaults to stdin)
+
+Options:
+  -c, --count-only    Show only the count of unique lines
+  -r, --reverse       Sort by count descending (most common first)
+  -h, --help          Show this help
+
+Features:
+  - Counts unique lines
+  - Sorts by count or alphabetically
+  - Portable (works without GNU coreutils)
+
+Examples:
+  cat access.log | uniqs
+  uniqs --reverse access.log
+  uniqs --count-only data.txt
+  history | awk '{print $2}' | uniqs -r | head -10
+EOF
+}
+
+main() {
+    local count_only=false
+    local reverse=false
+    local file=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -c|--count-only)
+                count_only=true
+                shift
+                ;;
+            -r|--reverse)
+                reverse=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                file="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    # Validate file if provided
+    if [[ -n "$file" ]] && [[ ! -f "$file" ]]; then
+        die "File not found: $file"
+    fi
+    
+    # Count unique lines
+    local input
+    if [[ -n "$file" ]]; then
+        input=$(cat "$file")
+    else
+        input=$(cat)
+    fi
+    
+    if [[ -z "$input" ]]; then
+        log_warn "No input provided"
+        exit 0
+    fi
+    
+    # Use sort | uniq -c for counting
+    local result
+    result=$(echo "$input" | sort | uniq -c)
+    
+    # Sort by count if requested
+    if $reverse; then
+        result=$(echo "$result" | sort -rn)
+    else
+        result=$(echo "$result" | sort -n)
+    fi
+    
+    # Show results
+    if $count_only; then
+        echo "$result" | wc -l | trim
+    else
+        echo "$result" | awk '{printf "%6d  %s\n", $1, substr($0, index($0,$2))}'
+    fi
+}
+
+main "$@"

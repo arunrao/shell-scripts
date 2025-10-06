@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# wake - Wake-on-LAN helper
+# Send magic packet to wake up a computer
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: wake <mac-address> [broadcast-ip]
+
+Send a Wake-on-LAN magic packet to wake up a computer.
+
+Arguments:
+  <mac-address>   MAC address (format: AA:BB:CC:DD:EE:FF)
+  [broadcast-ip]  Broadcast IP (default: 255.255.255.255)
+
+Features:
+  - Uses wakeonlan, ether-wake, or wol if available
+  - Falls back to manual magic packet creation
+  - Supports both IPv4 and IPv6 networks
+
+Examples:
+  wake 00:11:22:33:44:55
+  wake AA:BB:CC:DD:EE:FF 192.168.1.255
+  wake aa-bb-cc-dd-ee-ff
+
+Note: Target computer must support Wake-on-LAN and have it enabled in BIOS
+EOF
+}
+
+# Normalize MAC address format
+normalize_mac() {
+    local mac="$1"
+    # Remove any separators and convert to uppercase
+    mac=$(echo "$mac" | tr -d ':' | tr -d '-' | tr '[:lower:]' '[:upper:]')
+    
+    # Validate length
+    if [[ ${#mac} -ne 12 ]]; then
+        return 1
+    fi
+    
+    # Validate hex
+    if [[ ! "$mac" =~ ^[0-9A-F]{12}$ ]]; then
+        return 1
+    fi
+    
+    # Return colon-separated format
+    echo "$mac" | sed 's/../&:/g' | sed 's/:$//'
+}
+
+main() {
+    if [[ $# -eq 0 ]]; then
+        log_error "MAC address required"
+        show_usage
+        exit 1
+    fi
+    
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        show_usage
+        exit 0
+    fi
+    
+    local mac="$1"
+    local broadcast="${2:-255.255.255.255}"
+    
+    # Normalize and validate MAC address
+    local normalized_mac
+    if ! normalized_mac=$(normalize_mac "$mac"); then
+        die "Invalid MAC address format: $mac"
+    fi
+    
+    log_info "Sending Wake-on-LAN packet"
+    log_info "MAC: $normalized_mac"
+    log_info "Broadcast: $broadcast"
+    
+    # Method 1: wakeonlan command
+    if have_cmd wakeonlan; then
+        log_debug "Using wakeonlan"
+        wakeonlan -i "$broadcast" "$normalized_mac"
+        log_success "Magic packet sent"
+        return 0
+    fi
+    
+    # Method 2: etherwake (Linux)
+    if have_cmd etherwake; then
+        log_debug "Using etherwake"
+        sudo etherwake "$normalized_mac"
+        log_success "Magic packet sent"
+        return 0
+    fi
+    
+    # Method 3: wol command
+    if have_cmd wol; then
+        log_debug "Using wol"
+        wol "$normalized_mac"
+        log_success "Magic packet sent"
+        return 0
+    fi
+    
+    # Method 4: Manual with Perl (if available)
+    if have_cmd perl; then
+        log_debug "Using Perl to send magic packet"
+        local mac_hex
+        mac_hex=$(echo "$normalized_mac" | tr -d ':')
+        
+        perl -e "
+        use Socket;
+        my \$mac = '$mac_hex';
+        my \$packet = chr(0xFF) x 6 . pack('H12', \$mac) x 16;
+        socket(SOCK, AF_INET, SOCK_DGRAM, getprotobyname('udp')) or die \"socket: \$!\";
+        setsockopt(SOCK, SOL_SOCKET, SO_BROADCAST, 1) or die \"setsockopt: \$!\";
+        my \$addr = sockaddr_in(9, inet_aton('$broadcast'));
+        send(SOCK, \$packet, 0, \$addr) or die \"send: \$!\";
+        close(SOCK);
+        "
+        log_success "Magic packet sent"
+        return 0
+    fi
+    
+    log_error "No suitable Wake-on-LAN tool found"
+    log_info "Please install one of: wakeonlan, etherwake, wol"
+    log_info "  macOS:  brew install wakeonlan"
+    log_info "  Ubuntu: sudo apt-get install wakeonlan"
+    exit 1
+}
+
+main "$@"

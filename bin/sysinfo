@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# sysinfo - System information summary
+# Shows CPU, memory, disk, battery, and temperature info with smart fallbacks
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: sysinfo [options]
+
+Display system information summary.
+
+Options:
+  -v, --verbose   Show detailed information
+  -h, --help      Show this help
+
+Information shown:
+  - OS and kernel version
+  - CPU model and count
+  - Memory usage
+  - Disk usage
+  - Battery status (macOS/laptops)
+  - System temperature (if available)
+  - Load average
+
+Examples:
+  sysinfo              # Show standard info
+  sysinfo --verbose    # Show detailed info
+EOF
+}
+
+show_os_info() {
+    echo "${BOLD}=== Operating System ===${NC}"
+    if is_mac; then
+        sw_vers
+        echo "Kernel: $(uname -r)"
+    else
+        if [[ -f /etc/os-release ]]; then
+            grep "^PRETTY_NAME" /etc/os-release | cut -d'"' -f2
+        else
+            uname -s
+        fi
+        echo "Kernel: $(uname -r)"
+    fi
+    echo ""
+}
+
+show_cpu_info() {
+    echo "${BOLD}=== CPU ===${NC}"
+    if is_mac; then
+        sysctl -n machdep.cpu.brand_string
+        echo "Cores: $(sysctl -n hw.ncpu)"
+    else
+        if [[ -f /proc/cpuinfo ]]; then
+            grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2 | trim
+            echo "Cores: $(nproc)"
+        fi
+    fi
+    echo ""
+}
+
+show_memory_info() {
+    echo "${BOLD}=== Memory ===${NC}"
+    if is_mac; then
+        local total
+        total=$(sysctl -n hw.memsize | awk '{print $1/1024/1024/1024 " GB"}')
+        echo "Total: $total"
+        
+        # Show memory pressure
+        if have_cmd memory_pressure; then
+            memory_pressure | head -3
+        fi
+    else
+        if have_cmd free; then
+            free -h
+        elif [[ -f /proc/meminfo ]]; then
+            grep -E "MemTotal|MemAvailable|MemFree" /proc/meminfo
+        fi
+    fi
+    echo ""
+}
+
+show_disk_info() {
+    echo "${BOLD}=== Disk Usage ===${NC}"
+    if have_cmd df; then
+        df -h / 2>/dev/null || df -h | head -2
+    fi
+    echo ""
+}
+
+show_battery_info() {
+    if is_mac; then
+        echo "${BOLD}=== Battery ===${NC}"
+        pmset -g batt | grep -v "^$"
+        echo ""
+    elif [[ -d /sys/class/power_supply ]]; then
+        local battery_found=false
+        for bat in /sys/class/power_supply/BAT*; do
+            if [[ -d "$bat" ]]; then
+                battery_found=true
+                echo "${BOLD}=== Battery ===${NC}"
+                local capacity
+                capacity=$(cat "$bat/capacity" 2>/dev/null || echo "N/A")
+                local status
+                status=$(cat "$bat/status" 2>/dev/null || echo "N/A")
+                echo "Capacity: ${capacity}%"
+                echo "Status: $status"
+                echo ""
+                break
+            fi
+        done
+    fi
+}
+
+show_temperature() {
+    if is_mac; then
+        # macOS doesn't have easy temp access without additional tools
+        :
+    else
+        # Linux temperature sensors
+        if have_cmd sensors; then
+            echo "${BOLD}=== Temperature ===${NC}"
+            sensors | grep -E "Core|temp" | head -5
+            echo ""
+        fi
+    fi
+}
+
+show_load_average() {
+    echo "${BOLD}=== Load Average ===${NC}"
+    if is_mac; then
+        sysctl -n vm.loadavg | awk '{print "1min: " $2 "  5min: " $3 "  15min: " $4}'
+    else
+        cat /proc/loadavg | awk '{print "1min: " $1 "  5min: " $2 "  15min: " $3}'
+    fi
+    echo ""
+}
+
+show_uptime_info() {
+    echo "${BOLD}=== Uptime ===${NC}"
+    uptime
+    echo ""
+}
+
+main() {
+    local verbose=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    echo "${BOLD}System Information - $(hostname)${NC}"
+    echo "$(date)"
+    echo ""
+    
+    show_os_info
+    show_cpu_info
+    show_memory_info
+    show_disk_info
+    show_load_average
+    show_uptime_info
+    show_battery_info
+    
+    if $verbose; then
+        show_temperature
+    fi
+}
+
+main "$@"

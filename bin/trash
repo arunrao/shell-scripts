@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# trash - Move files to Trash instead of deleting
+# Safer alternative to rm - files are recoverable from Trash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: trash <file|directory> [...]
+
+Move files or directories to Trash (safer than rm).
+
+Arguments:
+  <file|directory>  One or more files/directories to trash
+
+Options:
+  -l, --list        List items in Trash
+  -e, --empty       Empty Trash (with confirmation)
+  -h, --help        Show this help
+
+Features:
+  - Moves files to ~/.Trash (recoverable)
+  - Handles multiple files
+  - Works with directories
+  - Preserves file metadata
+
+Examples:
+  trash old-file.txt
+  trash *.log
+  trash old-dir/
+  trash file1.txt file2.txt dir1/
+  trash --list
+  trash --empty
+
+Note: Files can be recovered from Trash in Finder
+EOF
+}
+
+list_trash() {
+    local trash_dir="$HOME/.Trash"
+    
+    if [[ ! -d "$trash_dir" ]] || [[ -z "$(ls -A "$trash_dir" 2>/dev/null)" ]]; then
+        log_info "Trash is empty"
+        return 0
+    fi
+    
+    echo "${BOLD}Items in Trash:${NC}"
+    echo ""
+    ls -lhA "$trash_dir"
+}
+
+empty_trash() {
+    local trash_dir="$HOME/.Trash"
+    
+    if [[ ! -d "$trash_dir" ]] || [[ -z "$(ls -A "$trash_dir" 2>/dev/null)" ]]; then
+        log_info "Trash is already empty"
+        return 0
+    fi
+    
+    local item_count
+    item_count=$(ls -A "$trash_dir" | wc -l | trim)
+    
+    log_warn "This will permanently delete $item_count item(s) from Trash"
+    
+    if confirm "Empty Trash?" "n"; then
+        rm -rf "$trash_dir"/*
+        log_success "Trash emptied"
+    else
+        log_info "Cancelled"
+    fi
+}
+
+move_to_trash() {
+    local item="$1"
+    local trash_dir="$HOME/.Trash"
+    
+    # Check if item exists
+    if [[ ! -e "$item" ]]; then
+        log_error "Does not exist: $item"
+        return 1
+    fi
+    
+    # Get absolute path
+    local abs_path
+    abs_path=$(get_absolute_path "$item")
+    local basename
+    basename=$(basename "$abs_path")
+    local dest="$trash_dir/$basename"
+    
+    # Handle name conflicts
+    if [[ -e "$dest" ]]; then
+        local timestamp
+        timestamp=$(date +%Y%m%d_%H%M%S)
+        dest="$trash_dir/${basename}_${timestamp}"
+        log_debug "Renamed to avoid conflict: ${basename}_${timestamp}"
+    fi
+    
+    # Move to trash
+    if mv "$abs_path" "$dest"; then
+        log_success "Moved to Trash: $item"
+        return 0
+    else
+        log_error "Failed to move: $item"
+        return 1
+    fi
+}
+
+main() {
+    if ! is_mac; then
+        log_warn "This script is designed for macOS"
+        log_info "On Linux, consider using 'trash-cli' or 'gio trash'"
+    fi
+    
+    if [[ $# -eq 0 ]]; then
+        log_error "No files specified"
+        show_usage
+        exit 1
+    fi
+    
+    # Parse arguments
+    case "$1" in
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        -l|--list)
+            list_trash
+            exit 0
+            ;;
+        -e|--empty)
+            empty_trash
+            exit 0
+            ;;
+    esac
+    
+    # Move files to trash
+    local success=0
+    local failed=0
+    
+    for item in "$@"; do
+        if move_to_trash "$item"; then
+            ((success++))
+        else
+            ((failed++))
+        fi
+    done
+    
+    if [[ $failed -gt 0 ]]; then
+        log_warn "Moved $success item(s), failed on $failed item(s)"
+        exit 1
+    fi
+}
+
+main "$@"
