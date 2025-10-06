@@ -63,7 +63,7 @@ main() {
     
     need_cmd aws
     
-    echo "${BOLD}=== AWS Identity ===${NC}"
+    echo -e "${BOLD}=== AWS Identity ===${NC}"
     echo ""
     
     # Get caller identity
@@ -97,7 +97,7 @@ main() {
     # Show access key (partial) if verbose
     if $verbose; then
         echo ""
-        echo "${BOLD}=== Configuration ===${NC}"
+        echo -e "${BOLD}=== Configuration ===${NC}"
         
         local access_key
         access_key=$(aws configure get aws_access_key_id 2>/dev/null || echo "N/A")
@@ -113,7 +113,7 @@ main() {
         
         # Show available profiles
         echo ""
-        echo "${BOLD}=== Available Profiles ===${NC}"
+        echo -e "${BOLD}=== Available Profiles ===${NC}"
         if [[ -f ~/.aws/credentials ]]; then
             grep '^\[' ~/.aws/credentials | tr -d '[]'
         else

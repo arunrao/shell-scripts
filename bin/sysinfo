@@ -42,7 +42,7 @@ EOF
 }
 
 show_os_info() {
-    echo "${BOLD}=== Operating System ===${NC}"
+    echo -e "${BOLD}=== Operating System ===${NC}"
     if is_mac; then
         sw_vers
         echo "Kernel: $(uname -r)"
@@ -58,7 +58,7 @@ show_os_info() {
 }
 
 show_cpu_info() {
-    echo "${BOLD}=== CPU ===${NC}"
+    echo -e "${BOLD}=== CPU ===${NC}"
     if is_mac; then
         sysctl -n machdep.cpu.brand_string
         echo "Cores: $(sysctl -n hw.ncpu)"
@@ -72,7 +72,7 @@ show_cpu_info() {
 }
 
 show_memory_info() {
-    echo "${BOLD}=== Memory ===${NC}"
+    echo -e "${BOLD}=== Memory ===${NC}"
     if is_mac; then
         local total
         total=$(sysctl -n hw.memsize | awk '{print $1/1024/1024/1024 " GB"}')
@@ -93,7 +93,7 @@ show_memory_info() {
 }
 
 show_disk_info() {
-    echo "${BOLD}=== Disk Usage ===${NC}"
+    echo -e "${BOLD}=== Disk Usage ===${NC}"
     if have_cmd df; then
         df -h / 2>/dev/null || df -h | head -2
     fi
@@ -102,7 +102,7 @@ show_disk_info() {
 
 show_battery_info() {
     if is_mac; then
-        echo "${BOLD}=== Battery ===${NC}"
+        echo -e "${BOLD}=== Battery ===${NC}"
         pmset -g batt | grep -v "^$"
         echo ""
     elif [[ -d /sys/class/power_supply ]]; then
@@ -110,7 +110,7 @@ show_battery_info() {
         for bat in /sys/class/power_supply/BAT*; do
             if [[ -d "$bat" ]]; then
                 battery_found=true
-                echo "${BOLD}=== Battery ===${NC}"
+                echo -e "${BOLD}=== Battery ===${NC}"
                 local capacity
                 capacity=$(cat "$bat/capacity" 2>/dev/null || echo "N/A")
                 local status
@@ -131,7 +131,7 @@ show_temperature() {
     else
         # Linux temperature sensors
         if have_cmd sensors; then
-            echo "${BOLD}=== Temperature ===${NC}"
+            echo -e "${BOLD}=== Temperature ===${NC}"
             sensors | grep -E "Core|temp" | head -5
             echo ""
         fi
@@ -139,7 +139,7 @@ show_temperature() {
 }
 
 show_load_average() {
-    echo "${BOLD}=== Load Average ===${NC}"
+    echo -e "${BOLD}=== Load Average ===${NC}"
     if is_mac; then
         sysctl -n vm.loadavg | awk '{print "1min: " $2 "  5min: " $3 "  15min: " $4}'
     else
@@ -149,7 +149,7 @@ show_load_average() {
 }
 
 show_uptime_info() {
-    echo "${BOLD}=== Uptime ===${NC}"
+    echo -e "${BOLD}=== Uptime ===${NC}"
     uptime
     echo ""
 }
@@ -176,7 +176,7 @@ main() {
         esac
     done
     
-    echo "${BOLD}System Information - $(hostname)${NC}"
+    echo -e "${BOLD}System Information - $(hostname)${NC}"
     echo "$(date)"
     echo ""
     

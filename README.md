@@ -1,6 +1,6 @@
 # Shell Scripts Library
 
-A collection of 37 cross-platform shell utilities for macOS and Linux users.
+A collection of 41 cross-platform shell utilities for macOS and Linux users.
 
 ## Features
 
@@ -127,6 +127,12 @@ gpr 123                     # Checkout PR #123
 - `killdock` - Restart Dock, Finder, SystemUIServer
 - `showhidden` - Toggle Finder hidden files visibility
 
+### Vercel Workflow (4)
+- `vscope` - Manage Vercel scope/team (set once, use everywhere)
+- `vdeploy` - Smart deployment with auto-open & clipboard
+- `vlogs` - Easy log viewing (auto-finds latest deployment)
+- `vvars` - Environment variables management (list command)
+
 ## Highlights
 
 ### 🔥 Most Useful for Mac Developers
@@ -143,6 +149,15 @@ trash --empty               # Empty trash with confirmation
 killport 3000               # Kill whatever's using port 3000
 killport 8080 --force       # Force kill without confirmation
 killport --list             # Show all listening ports
+```
+
+**Vercel workflow** - No more `--scope` flags! 🎉
+```bash
+vscope set my-team          # Set once per project
+vdeploy                     # Deploy (auto-uses scope)
+vdeploy --prod              # Deploy to production
+vlogs                       # View latest logs
+vvars list                  # List env variables
 ```
 
 **xcopy/xpaste** - Cross-platform clipboard (works on Linux too)
@@ -205,9 +220,10 @@ main "$@"
 
 ```
 .
-├── bin/                  # 37 executable scripts
+├── bin/                  # 41 executable scripts
 ├── lib/
 │   └── common.sh        # Shared utilities library
+├── Makefile             # Easy installation & management
 ├── LICENSE              # MIT License
 └── README.md           # This file
 ```
@@ -247,6 +263,7 @@ Provides shared functions used by all scripts:
 - `docker` - Container scripts (`dstopall`, `drmorphans`)
 - `kubectl` - Kubernetes scripts (`kctx`, `kns`)
 - `aws-cli` - AWS scripts (`aws-whoami`)
+- `vercel` - Vercel workflow scripts (`vscope`, `vdeploy`, `vlogs`, `vvars`)
 
 Most scripts work with built-in macOS/Linux tools and gracefully fall back when optional dependencies are missing.
 

@@ -57,7 +57,7 @@ get_public_ip() {
 }
 
 show_local_ips() {
-    echo "${BOLD}=== Local Network Interfaces ===${NC}"
+    echo -e "${BOLD}=== Local Network Interfaces ===${NC}"
     echo ""
     
     if is_mac; then
@@ -71,7 +71,7 @@ show_local_ips() {
     fi
     
     echo ""
-    echo "${BOLD}=== Default Gateway ===${NC}"
+    echo -e "${BOLD}=== Default Gateway ===${NC}"
     if is_mac; then
         netstat -rn | grep default
     else
@@ -85,7 +85,7 @@ show_local_ips() {
 
 show_dns() {
     echo ""
-    echo "${BOLD}=== DNS Servers ===${NC}"
+    echo -e "${BOLD}=== DNS Servers ===${NC}"
     
     if [[ -f /etc/resolv.conf ]]; then
         grep "^nameserver" /etc/resolv.conf
@@ -130,7 +130,7 @@ main() {
     
     if $show_public; then
         [[ $show_local == true ]] && echo ""
-        echo "${BOLD}=== Public IP Address ===${NC}"
+        echo -e "${BOLD}=== Public IP Address ===${NC}"
         local public_ip
         public_ip=$(get_public_ip)
         

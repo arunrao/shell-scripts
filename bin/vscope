@@ -83,7 +83,7 @@ show_scope() {
     local scope
     scope=$(cat "$SCOPE_FILE")
     
-    echo "${BOLD}Current scope:${NC} $scope"
+    echo -e "${BOLD}Current scope:${NC} $scope"
     echo "File: $SCOPE_FILE"
 }
 

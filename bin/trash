@@ -56,7 +56,7 @@ list_trash() {
         return 0
     fi
     
-    echo "${BOLD}Items in Trash:${NC}"
+    echo -e "${BOLD}Items in Trash:${NC}"
     echo ""
     ls -lhA "$trash_dir"
 }

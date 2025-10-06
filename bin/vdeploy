@@ -128,12 +128,12 @@ main() {
     if deployment_url=$(eval "$cmd" 2>&1 | tee /dev/tty | grep -oE 'https://[^[:space:]]+' | tail -1); then
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "${GREEN}${BOLD}✓ Deployment successful!${NC}"
+        echo -e "${GREEN}${BOLD}✓ Deployment successful!${NC}"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         
         if [[ -n "$deployment_url" ]]; then
             echo ""
-            echo "${BOLD}URL:${NC} $deployment_url"
+            echo -e "${BOLD}URL:${NC} $deployment_url"
             echo ""
             
             # Copy to clipboard if available

@@ -39,13 +39,13 @@ EOF
 }
 
 show_current_uptime() {
-    echo "${BOLD}=== Current Uptime ===${NC}"
+    echo -e "${BOLD}=== Current Uptime ===${NC}"
     uptime
     echo ""
 }
 
 show_boot_time() {
-    echo "${BOLD}=== Last Boot ===${NC}"
+    echo -e "${BOLD}=== Last Boot ===${NC}"
     if is_mac; then
         sysctl -n kern.boottime | sed 's/^.*} //' | awk '{print $2, $3, $4, $5, $6}'
     else
@@ -57,7 +57,7 @@ show_boot_time() {
 show_boot_history() {
     local count="${1:-5}"
     
-    echo "${BOLD}=== Recent Boots (last $count) ===${NC}"
+    echo -e "${BOLD}=== Recent Boots (last $count) ===${NC}"
     
     if is_mac; then
         # macOS: use last command
@@ -82,7 +82,7 @@ show_boot_history() {
 }
 
 show_load() {
-    echo "${BOLD}=== System Load ===${NC}"
+    echo -e "${BOLD}=== System Load ===${NC}"
     if is_mac; then
         sysctl -n vm.loadavg
         echo "CPU cores: $(sysctl -n hw.ncpu)"
@@ -91,6 +91,69 @@ show_load() {
         echo "CPU cores: $(nproc)"
     fi
     echo ""
+}
+
+show_sessions() {
+    echo -e "${BOLD}=== Active Sessions ===${NC}"
+    
+    if have_cmd w; then
+        # Use w command for detailed view
+        w -h | awk '{
+            user=$1
+            tty=$2
+            login=$4
+            idle=$5
+            
+            # Classify session type
+            if (tty == "console") {
+                type = "(GUI login)"
+            } else if (tty ~ /^ttys/) {
+                type = "(terminal)"
+            } else if (tty ~ /^pts/) {
+                type = "(terminal)"
+            } else if (tty ~ /^ssh/) {
+                type = "(SSH)"
+            } else {
+                type = ""
+            }
+            
+            printf "  %-12s %-10s %-8s %s\n", user, tty, login, type
+        }'
+    elif have_cmd who; then
+        # Fallback to who command
+        who | awk '{
+            user=$1
+            tty=$2
+            login=$3 " " $4
+            
+            # Classify session type
+            if (tty == "console") {
+                type = "(GUI login)"
+            } else if (tty ~ /^ttys/) {
+                type = "(terminal)"
+            } else if (tty ~ /^pts/) {
+                type = "(terminal)"
+            } else {
+                type = ""
+            }
+            
+            printf "  %-12s %-10s %-12s %s\n", user, tty, login, type
+        }'
+    else
+        log_warn "Unable to show sessions (no w or who command)"
+    fi
+    
+    echo ""
+    
+    # Show unique user count
+    if have_cmd who; then
+        local unique_users
+        unique_users=$(who | awk '{print $1}' | sort -u | wc -l | xargs)
+        local total_sessions
+        total_sessions=$(who | wc -l | xargs)
+        echo "  $unique_users unique user(s), $total_sessions total session(s)"
+        echo ""
+    fi
 }
 
 main() {
@@ -119,11 +182,12 @@ main() {
         die "Invalid count: $last_count"
     fi
     
-    echo "${BOLD}System Uptime - $(hostname)${NC}"
+    echo -e "${BOLD}System Uptime - $(hostname)${NC}"
     echo ""
     
     show_current_uptime
     show_boot_time
+    show_sessions
     show_load
     show_boot_history "$last_count"
 }
