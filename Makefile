@@ -164,6 +164,15 @@ clean: ## Remove temporary files and caches
 check-path: ## Check if install directory is in PATH
 	@if echo $$PATH | grep -q "$(INSTALL_DIR)"; then \
 		echo "$(GREEN)✓ $(INSTALL_DIR) is in your PATH$(NC)"; \
+		echo ""; \
+		echo "$(YELLOW)Checking PATH priority...$(NC)"; \
+		if echo $$PATH | grep -oE '[^:]+' | head -20 | grep -n "$(INSTALL_DIR)" | grep -q "^[1-5]:"; then \
+			echo "$(GREEN)✓ $(INSTALL_DIR) has good priority in PATH$(NC)"; \
+		else \
+			echo "$(YELLOW)⚠ $(INSTALL_DIR) might be too late in PATH$(NC)"; \
+			echo "  Some system commands may override custom scripts"; \
+			echo "  Ensure $(INSTALL_DIR) comes BEFORE /usr/bin"; \
+		fi; \
 	else \
 		echo "$(YELLOW)⚠ $(INSTALL_DIR) is NOT in your PATH$(NC)"; \
 		echo ""; \
