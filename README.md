@@ -1,6 +1,6 @@
 # Shell Scripts Library
 
-A collection of 41 cross-platform shell utilities for macOS and Linux users.
+A collection of 47 cross-platform shell utilities for macOS and Linux users.
 
 ## Features
 
@@ -57,9 +57,16 @@ killport 3000               # Kill process on port 3000
 serve                       # Start HTTP server (port 8000)
 ff "*.js"                   # Fuzzy find files
 
+# Docker helpers
+dclean --all                # Clean Docker resources
+dexec myapp                 # Open shell in container
+dlogs -f myapp              # Follow container logs
+dports                      # Show port mappings
+
 # System info
 sysinfo                     # System overview
 ports                       # List listening ports
+wifi                        # WiFi info and management
 
 # Git helpers
 gdirty                      # Show repos with changes
@@ -85,13 +92,14 @@ gpr 123                     # Checkout PR #123
 - `trash` - Move files to Trash instead of rm (recoverable!)
 - `killport` - Kill process listening on specific port
 
-### Networking & Ops (6)
+### Networking & Ops (7)
 - `ipinfo` - Show local/public IPs, routes, DNS
 - `ports` - List listening ports (ss/lsof/netstat)
 - `probe` - Curl URL with timing, TLS info, retries
 - `pullrsync` - Safe rsync pull with dry-run preview
 - `pushrsync` - Safe rsync push with dry-run preview
 - `wake` - Wake-on-LAN magic packet sender
+- `wifi` - WiFi management (on/off/toggle/scan/switch networks)
 
 ### Git (3)
 - `gclean-branches` - Prune merged branches safely
@@ -102,7 +110,12 @@ gpr 123                     # Checkout PR #123
 - `sysinfo` - CPU/memory/disk/battery info with smart fallbacks
 - `upto` - System uptime and boot history
 
-### Docker & Kubernetes (4)
+### Docker & Kubernetes (9)
+- `dclean` - Comprehensive Docker cleanup (containers, volumes, networks, cache)
+- `dexec` - Interactive container shell with auto-detected shell
+- `dlogs` - Container log viewer with search and follow
+- `dls` - Enhanced Docker listing (containers, images, volumes, networks)
+- `dports` - Port mapping viewer with conflict detection
 - `drmorphans` - Remove orphaned Docker images
 - `dstopall` - Stop all Docker containers
 - `kctx` - kubectl context switcher (with fzf)
@@ -177,6 +190,38 @@ timer 30s "Coffee ready"    # With custom message
 gdirty ~/projects           # Check all projects
 ```
 
+**dclean** - Comprehensive Docker cleanup made easy
+```bash
+dclean --all                # Clean everything with confirmation
+dclean -c -v                # Clean containers and volumes
+dclean -af                  # Nuclear option: clean everything, no prompts
+```
+
+**dexec** - Quick access to container shells
+```bash
+dexec                       # Interactive container selection
+dexec myapp                 # Open shell in myapp container
+dexec --user root myapp     # Open shell as root
+```
+
+**dlogs** - Container log viewer with filtering
+```bash
+dlogs                       # Interactive selection
+dlogs -f myapp              # Follow logs in real-time
+dlogs --tail 100 myapp      # Last 100 lines
+dlogs -f --grep error       # Follow and filter for errors
+```
+
+**wifi** - WiFi management made simple
+```bash
+wifi                        # Show current WiFi info
+wifi on                     # Turn WiFi on
+wifi off                    # Turn WiFi off
+wifi toggle                 # Toggle WiFi on/off
+wifi scan                   # Scan for networks
+wifi switch MyNetwork       # Switch to different network
+```
+
 ## Development
 
 ### Adding New Scripts
@@ -220,7 +265,7 @@ main "$@"
 
 ```
 .
-├── bin/                  # 41 executable scripts
+├── bin/                  # 47 executable scripts
 ├── lib/
 │   └── common.sh        # Shared utilities library
 ├── Makefile             # Easy installation & management
@@ -276,7 +321,7 @@ make help            # Show all available commands
 make install         # Install to ~/.local/bin (recommended)
 make test            # Verify all scripts are accessible
 make check-deps      # Check for optional dependencies
-make list            # List all 37 scripts
+make list            # List all 47 scripts
 make update          # Pull latest changes from git
 make uninstall       # Remove installed scripts
 make info            # Show project information

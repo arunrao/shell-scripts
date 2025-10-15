@@ -46,13 +46,17 @@ main() {
     
     local sed_cmd="sed"
     
-    # On macOS, prefer GNU sed if available
+    # On macOS, prefer GNU sed if installed via Homebrew
     if is_mac; then
-        if have_cmd gsed; then
-            sed_cmd="gsed"
-            log_debug "Using GNU sed (gsed)"
+        # Check for GNU sed in common Homebrew locations
+        if [[ -x "/opt/homebrew/bin/gsed" ]]; then
+            sed_cmd="/opt/homebrew/bin/gsed"
+            log_debug "Using GNU sed (Homebrew Apple Silicon)"
+        elif [[ -x "/usr/local/bin/gsed" ]]; then
+            sed_cmd="/usr/local/bin/gsed"
+            log_debug "Using GNU sed (Homebrew Intel)"
         else
-            log_debug "Using BSD sed (consider installing gnu-sed: brew install gnu-sed)"
+            log_debug "Using BSD sed (consider installing: brew install gnu-sed)"
         fi
     fi
     

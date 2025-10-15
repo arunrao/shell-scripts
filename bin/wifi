@@ -1,0 +1,695 @@
+#!/usr/bin/env bash
+# wifi - WiFi management and information tool
+# Manage WiFi connections and show network information
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: wifi [command] [options]
+
+Manage WiFi connections and show network information.
+
+Commands:
+  (none)              Show current WiFi information (default)
+  on|up               Turn WiFi on
+  off|down            Turn WiFi off
+  toggle              Toggle WiFi on/off
+  switch <network>    Switch to a different network
+  scan                Scan for nearby networks
+  status              Show WiFi status (on/off)
+  list                List saved/known networks
+
+Options:
+  -q, --quick         Quick check (skip detailed scan)
+  -t, --test-only     Only test connectivity, skip WiFi info
+  -h, --help          Show this help
+
+Examples:
+  wifi                  # Show current WiFi information
+  wifi on               # Turn WiFi on
+  wifi off              # Turn WiFi off
+  wifi toggle           # Toggle WiFi on/off
+  wifi switch MyNet     # Switch to 'MyNet' network
+  wifi scan             # Scan for nearby networks
+  wifi status           # Check if WiFi is on or off
+  wifi --test-only      # Only test connectivity
+EOF
+}
+
+get_wifi_interface() {
+    if is_mac; then
+        # On macOS, try to find the WiFi interface
+        networksetup -listallhardwareports 2>/dev/null | \
+        awk '/Wi-Fi|AirPort/{getline; print $2; exit}'
+    else
+        # On Linux, look for wireless interface
+        if have_cmd iw; then
+            iw dev | awk '/Interface/{print $2; exit}'
+        elif have_cmd iwconfig; then
+            iwconfig 2>/dev/null | awk '/IEEE 802.11/{print $1; exit}'
+        else
+            # Fallback: common wireless interface names
+            for iface in wlan0 wlp* wlo*; do
+                if [[ -d "/sys/class/net/$iface" ]]; then
+                    echo "$iface"
+                    return 0
+                fi
+            done
+        fi
+    fi
+}
+
+get_macos_wifi_info() {
+    local interface="$1"
+    
+    echo -e "${BOLD}=== WiFi Network Information ===${NC}"
+    echo ""
+    
+    # Try system_profiler first - most reliable for detecting WiFi connection
+    log_debug "Checking WiFi status with system_profiler..."
+    local wifi_status
+    wifi_status=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 2 "Status:")
+    
+    local is_wifi_connected=false
+    if echo "$wifi_status" | grep -q "Status: Connected"; then
+        is_wifi_connected=true
+    fi
+    
+    # Try to get SSID from networksetup
+    local ssid
+    ssid=$(networksetup -getairportnetwork "$interface" 2>/dev/null | awk -F': ' '{print $2}')
+    
+    # If networksetup doesn't give us SSID but system_profiler shows connected, parse from profiler
+    if [[ -z "$ssid" ]] || [[ "$ssid" == *"not associated"* ]]; then
+        if $is_wifi_connected; then
+            # Try to extract SSID from ipconfig getsummary (more reliable)
+            ssid=$(ipconfig getsummary "$interface" 2>/dev/null | grep "SSID" | head -1 | awk -F': ' '{print $2}' | xargs)
+            
+            # If that fails, try ioreg
+            if [[ -z "$ssid" ]] || [[ "$ssid" == "<redacted>" ]]; then
+                ssid=$(ioreg -l -n AppleBCMWLANCore 2>/dev/null | grep "IO80211SSID" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            fi
+            
+            # If still empty or is <redacted>, just mark as connected but hidden
+            if [[ -z "$ssid" ]] || [[ "$ssid" == "<redacted>" ]] || [[ "$ssid" == "<SSID Redacted>" ]]; then
+                ssid="<WiFi Network Hidden by macOS>"
+            fi
+        else
+            # Not connected via WiFi at all
+            local status
+            status=$(ifconfig "$interface" 2>/dev/null | grep "status:" | awk '{print $2}')
+            
+            if [[ "$status" == "active" ]]; then
+                local ip_addr
+                ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null)
+                if [[ -n "$ip_addr" ]]; then
+                    log_info "Interface $interface is active (${ip_addr})"
+                    log_warn "Not connected via WiFi - may be wired/thunderbolt network"
+                else
+                    log_warn "Interface $interface is up but no IP address assigned"
+                fi
+            else
+                log_warn "WiFi is not connected"
+            fi
+            return 1
+        fi
+    fi
+    
+    printf "%-20s " "Network (SSID):"
+    echo -e "${BOLD}${ssid}${NC}"
+    printf "%-20s %s\n" "Interface:" "$interface"
+    
+    # Get IP address
+    local ip_addr
+    ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null)
+    if [[ -n "$ip_addr" ]]; then
+        printf "%-20s %s\n" "IP Address:" "$ip_addr"
+    fi
+    
+    # Try to get more details from system_profiler (slower but more info)
+    log_debug "Getting detailed WiFi information..."
+    local wifi_details
+    wifi_details=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 30 "Current Network")
+    
+    if [[ -n "$wifi_details" ]]; then
+        local channel security signal
+        channel=$(echo "$wifi_details" | awk '/Channel:/{print $2; exit}')
+        security=$(echo "$wifi_details" | awk '/Security:/{$1=""; print $0; exit}' | xargs)
+        signal=$(echo "$wifi_details" | awk '/Signal \/ Noise:/{print $4, $5; exit}')
+        
+        [[ -n "$channel" ]] && printf "%-20s %s\n" "Channel:" "$channel"
+        [[ -n "$security" ]] && printf "%-20s %s\n" "Security:" "$security"
+        
+        if [[ -n "$signal" ]]; then
+            # Parse signal strength (format: "-XX dBm")
+            local rssi
+            rssi=$(echo "$signal" | awk '{print $1}')
+            
+            if [[ "$rssi" =~ ^-?[0-9]+$ ]]; then
+                local quality quality_text
+                if [[ $rssi -ge -50 ]]; then
+                    quality_text="Excellent"
+                    quality="${GREEN}${quality_text}${NC} ($signal)"
+                elif [[ $rssi -ge -60 ]]; then
+                    quality_text="Good"
+                    quality="${GREEN}${quality_text}${NC} ($signal)"
+                elif [[ $rssi -ge -70 ]]; then
+                    quality_text="Fair"
+                    quality="${YELLOW}${quality_text}${NC} ($signal)"
+                else
+                    quality_text="Weak"
+                    quality="${RED}${quality_text}${NC} ($signal)"
+                fi
+                printf "%-20s " "Signal Strength:"
+                echo -e "$quality"
+            fi
+        fi
+    fi
+    
+    echo ""
+}
+
+get_linux_wifi_info() {
+    local interface="$1"
+    
+    echo -e "${BOLD}=== WiFi Network Information ===${NC}"
+    echo ""
+    
+    local ssid=""
+    local signal=""
+    local quality=""
+    
+    if have_cmd iw; then
+        local iw_output
+        iw_output=$(iw dev "$interface" link 2>/dev/null)
+        
+        if [[ -z "$iw_output" ]] || echo "$iw_output" | grep -q "Not connected"; then
+            log_warn "Not connected to WiFi"
+            return 1
+        fi
+        
+        ssid=$(echo "$iw_output" | awk '/SSID:/{print $2}')
+        signal=$(echo "$iw_output" | awk '/signal:/{print $2, $3}')
+        
+    elif have_cmd iwconfig; then
+        local iwconfig_output
+        iwconfig_output=$(iwconfig "$interface" 2>/dev/null)
+        
+        ssid=$(echo "$iwconfig_output" | awk -F'"' '/ESSID:/{print $2}')
+        quality=$(echo "$iwconfig_output" | awk '/Quality/{print $2}')
+        signal=$(echo "$iwconfig_output" | awk '/Signal level/{print $4, $5}')
+    fi
+    
+    if [[ -z "$ssid" ]]; then
+        log_warn "Not connected to WiFi"
+        return 1
+    fi
+    
+    printf "%-20s %s\n" "Network (SSID):" "${BOLD}${ssid}${NC}"
+    [[ -n "$signal" ]] && printf "%-20s %s\n" "Signal Strength:" "$signal"
+    [[ -n "$quality" ]] && printf "%-20s %s\n" "Quality:" "$quality"
+    printf "%-20s %s\n" "Interface:" "$interface"
+    
+    # Get IP address
+    local ip_addr
+    ip_addr=$(ip addr show "$interface" 2>/dev/null | awk '/inet /{print $2; exit}')
+    if [[ -n "$ip_addr" ]]; then
+        printf "%-20s %s\n" "IP Address:" "$ip_addr"
+    fi
+    
+    echo ""
+}
+
+test_connectivity() {
+    echo -e "${BOLD}=== Connectivity Tests ===${NC}"
+    echo ""
+    
+    # Test 1: Ping gateway
+    local gateway
+    if is_mac; then
+        gateway=$(netstat -rn | grep "^default" | grep -v "fe80" | head -1 | awk '{print $2}')
+    else
+        gateway=$(ip route | grep default | head -1 | awk '{print $3}')
+    fi
+    
+    if [[ -n "$gateway" ]]; then
+        printf "%-30s " "Gateway ($gateway):"
+        if ping -c 2 -W 2 "$gateway" &>/dev/null; then
+            echo -e "${GREEN}✓ Reachable${NC}"
+        else
+            echo -e "${RED}✗ Unreachable${NC}"
+        fi
+    fi
+    
+    # Test 2: DNS resolution
+    printf "%-30s " "DNS Resolution:"
+    if host google.com &>/dev/null || nslookup google.com &>/dev/null; then
+        echo -e "${GREEN}✓ Working${NC}"
+    else
+        echo -e "${RED}✗ Failed${NC}"
+        return 1
+    fi
+    
+    # Test 3: Internet connectivity (HTTP)
+    printf "%-30s " "Internet (HTTP):"
+    if have_cmd curl; then
+        if curl -s --max-time 5 --head https://www.google.com &>/dev/null; then
+            echo -e "${GREEN}✓ Connected${NC}"
+        else
+            echo -e "${RED}✗ No Connection${NC}"
+            return 1
+        fi
+    elif have_cmd wget; then
+        if wget -q --timeout=5 --spider https://www.google.com 2>/dev/null; then
+            echo -e "${GREEN}✓ Connected${NC}"
+        else
+            echo -e "${RED}✗ No Connection${NC}"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}? Cannot test (curl/wget not found)${NC}"
+    fi
+    
+    # Test 4: Speed test endpoint
+    printf "%-30s " "External DNS (8.8.8.8):"
+    if ping -c 2 -W 2 8.8.8.8 &>/dev/null; then
+        echo -e "${GREEN}✓ Reachable${NC}"
+    else
+        echo -e "${RED}✗ Unreachable${NC}"
+    fi
+    
+    echo ""
+}
+
+scan_networks() {
+    echo -e "${BOLD}=== Nearby WiFi Networks ===${NC}"
+    echo ""
+    
+    if is_mac; then
+        # Use airport to scan on macOS
+        local airport="/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        
+        if [[ ! -x "$airport" ]]; then
+            log_error "WiFi scanning not available"
+            return 1
+        fi
+        
+        log_info "Scanning... (this may take a few seconds)"
+        echo ""
+        
+        printf "%-32s %-18s %-8s %-10s %s\n" "SSID" "BSSID" "CHANNEL" "RSSI" "SECURITY"
+        echo "----------------------------------------------------------------------------------------"
+        
+        "$airport" -s 2>/dev/null | tail -n +2 | while read -r line; do
+            # Parse airport output
+            local ssid bssid rssi channel security
+            ssid=$(echo "$line" | awk '{print $1}')
+            bssid=$(echo "$line" | awk '{print $2}')
+            rssi=$(echo "$line" | awk '{print $3}')
+            channel=$(echo "$line" | awk '{print $4}')
+            security=$(echo "$line" | awk '{for(i=7;i<=NF;i++) printf "%s ", $i; print ""}')
+            
+            # Color code by signal strength
+            local color="$NC"
+            if [[ "$rssi" =~ ^-?[0-9]+$ ]]; then
+                if [[ $rssi -ge -50 ]]; then
+                    color="$GREEN"
+                elif [[ $rssi -ge -70 ]]; then
+                    color="$YELLOW"
+                else
+                    color="$RED"
+                fi
+            fi
+            
+            printf "${color}%-32s${NC} %-18s %-8s %-10s %s\n" \
+                "$ssid" "$bssid" "$channel" "$rssi dBm" "${security:0:30}"
+        done | head -20
+        
+    else
+        if have_cmd iw; then
+            local interface
+            interface=$(get_wifi_interface)
+            
+            if [[ -z "$interface" ]]; then
+                log_error "No WiFi interface found"
+                return 1
+            fi
+            
+            log_info "Scanning... (requires sudo)"
+            echo ""
+            
+            printf "%-32s %-8s %-10s\n" "SSID" "CHANNEL" "SIGNAL"
+            echo "--------------------------------------------------------"
+            
+            sudo iw dev "$interface" scan 2>/dev/null | \
+            awk '/^BSS/{bssid=$2} /SSID:/{ssid=$2} /signal:/{signal=$2} /freq:/{freq=$2; 
+                if(ssid && signal) print ssid, freq, signal; ssid=""; signal=""}' | \
+            head -20
+            
+        elif have_cmd iwlist; then
+            local interface
+            interface=$(get_wifi_interface)
+            sudo iwlist "$interface" scan 2>/dev/null | \
+            awk '/ESSID:/{print $0} /Quality/{print $0} /Channel/{print $0}' | \
+            head -20
+        else
+            log_error "WiFi scanning not available (iw or iwlist required)"
+            return 1
+        fi
+    fi
+    
+    echo ""
+}
+
+# WiFi Management Functions
+
+wifi_turn_on() {
+    log_info "Turning WiFi on..."
+    
+    if is_mac; then
+        local interface
+        interface=$(get_wifi_interface)
+        if [[ -z "$interface" ]]; then
+            log_error "Could not find WiFi interface"
+            return 1
+        fi
+        
+        networksetup -setairportpower "$interface" on
+        if [[ $? -eq 0 ]]; then
+            log_success "WiFi turned on"
+            return 0
+        else
+            log_error "Failed to turn on WiFi"
+            return 1
+        fi
+    else
+        # Linux
+        if have_cmd nmcli; then
+            nmcli radio wifi on
+            log_success "WiFi turned on"
+        elif have_cmd rfkill; then
+            sudo rfkill unblock wifi
+            log_success "WiFi turned on"
+        else
+            log_error "No suitable WiFi management tool found (nmcli or rfkill)"
+            return 1
+        fi
+    fi
+}
+
+wifi_turn_off() {
+    log_info "Turning WiFi off..."
+    
+    if is_mac; then
+        local interface
+        interface=$(get_wifi_interface)
+        if [[ -z "$interface" ]]; then
+            log_error "Could not find WiFi interface"
+            return 1
+        fi
+        
+        networksetup -setairportpower "$interface" off
+        if [[ $? -eq 0 ]]; then
+            log_success "WiFi turned off"
+            return 0
+        else
+            log_error "Failed to turn off WiFi"
+            return 1
+        fi
+    else
+        # Linux
+        if have_cmd nmcli; then
+            nmcli radio wifi off
+            log_success "WiFi turned off"
+        elif have_cmd rfkill; then
+            sudo rfkill block wifi
+            log_success "WiFi turned off"
+        else
+            log_error "No suitable WiFi management tool found (nmcli or rfkill)"
+            return 1
+        fi
+    fi
+}
+
+wifi_toggle() {
+    log_info "Toggling WiFi..."
+    
+    if wifi_is_on; then
+        wifi_turn_off
+    else
+        wifi_turn_on
+    fi
+}
+
+wifi_is_on() {
+    if is_mac; then
+        local interface
+        interface=$(get_wifi_interface)
+        if [[ -z "$interface" ]]; then
+            return 1
+        fi
+        
+        local status
+        status=$(networksetup -getairportpower "$interface" 2>/dev/null | awk '{print $NF}')
+        [[ "$status" == "On" ]]
+    else
+        # Linux
+        if have_cmd nmcli; then
+            nmcli radio wifi | grep -q "enabled"
+        elif have_cmd rfkill; then
+            ! rfkill list wifi | grep -q "Soft blocked: yes"
+        else
+            # Try checking interface state
+            local interface
+            interface=$(get_wifi_interface)
+            [[ -n "$interface" ]] && ip link show "$interface" | grep -q "UP"
+        fi
+    fi
+}
+
+wifi_status() {
+    if wifi_is_on; then
+        log_success "WiFi is ON"
+        return 0
+    else
+        log_info "WiFi is OFF"
+        return 1
+    fi
+}
+
+wifi_switch() {
+    local network="$1"
+    
+    if [[ -z "$network" ]]; then
+        log_error "Network name required"
+        echo "Usage: wifi switch <network-name>"
+        return 1
+    fi
+    
+    log_info "Switching to network: $network"
+    
+    if is_mac; then
+        local interface
+        interface=$(get_wifi_interface)
+        if [[ -z "$interface" ]]; then
+            log_error "Could not find WiFi interface"
+            return 1
+        fi
+        
+        # Check if network requires password
+        networksetup -setairportnetwork "$interface" "$network"
+        if [[ $? -eq 0 ]]; then
+            log_success "Connected to $network"
+            return 0
+        else
+            log_error "Failed to connect to $network"
+            echo "If the network requires a password, use:"
+            echo "  networksetup -setairportnetwork $interface \"$network\" <password>"
+            return 1
+        fi
+    else
+        # Linux
+        if have_cmd nmcli; then
+            nmcli device wifi connect "$network"
+            if [[ $? -eq 0 ]]; then
+                log_success "Connected to $network"
+                return 0
+            else
+                log_error "Failed to connect to $network"
+                return 1
+            fi
+        else
+            log_error "nmcli not found (install NetworkManager)"
+            return 1
+        fi
+    fi
+}
+
+wifi_list_saved() {
+    log_info "Saved/Known WiFi networks:"
+    echo ""
+    
+    if is_mac; then
+        networksetup -listpreferredwirelessnetworks "$(get_wifi_interface)" 2>/dev/null | \
+            grep -v "Preferred networks" | \
+            sed 's/^[[:space:]]*//' | \
+            while IFS= read -r network; do
+                echo "  • $network"
+            done
+    else
+        # Linux
+        if have_cmd nmcli; then
+            nmcli connection show | grep wifi | awk '{print "  • " $1}'
+        else
+            log_warn "nmcli not found - cannot list saved networks"
+        fi
+    fi
+}
+
+main() {
+    local quick=false
+    local test_only=false
+    local scan_mode=false
+    local command=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -q|--quick)
+                quick=true
+                shift
+                ;;
+            -t|--test-only)
+                test_only=true
+                shift
+                ;;
+            # Commands (must come before options if mixed)
+            on|up)
+                command="on"
+                shift
+                ;;
+            off|down)
+                command="off"
+                shift
+                ;;
+            toggle)
+                command="toggle"
+                shift
+                ;;
+            status)
+                command="status"
+                shift
+                ;;
+            scan)
+                command="scan"
+                shift
+                ;;
+            switch)
+                command="switch"
+                shift
+                if [[ $# -eq 0 ]]; then
+                    log_error "Network name required for 'switch' command"
+                    show_usage
+                    exit 1
+                fi
+                local network="$1"
+                shift
+                ;;
+            list)
+                command="list"
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                log_error "Unknown command: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    # Execute command if specified
+    case "$command" in
+        on)
+            wifi_turn_on
+            exit $?
+            ;;
+        off)
+            wifi_turn_off
+            exit $?
+            ;;
+        toggle)
+            wifi_toggle
+            exit $?
+            ;;
+        status)
+            wifi_status
+            exit $?
+            ;;
+        scan)
+            scan_networks
+            exit $?
+            ;;
+        switch)
+            wifi_switch "$network"
+            exit $?
+            ;;
+        list)
+            wifi_list_saved
+            exit $?
+            ;;
+    esac
+    
+    # Default: show WiFi info (when no command specified)
+    # Get WiFi interface
+    local wifi_interface
+    wifi_interface=$(get_wifi_interface)
+    
+    if [[ -z "$wifi_interface" ]] && ! $test_only; then
+        log_error "No WiFi interface found"
+        exit 1
+    fi
+    
+    # Show WiFi info unless test-only
+    if ! $test_only; then
+        if is_mac; then
+            get_macos_wifi_info "$wifi_interface" || exit 1
+        else
+            get_linux_wifi_info "$wifi_interface" || exit 1
+        fi
+    fi
+    
+    # Test connectivity
+    test_connectivity
+    
+    # Summary
+    echo -e "${BOLD}=== Summary ===${NC}"
+    if ! $test_only; then
+        echo -e "${GREEN}✓${NC} Connected to WiFi"
+    fi
+    echo -e "${GREEN}✓${NC} Internet access available"
+}
+
+main "$@"
+

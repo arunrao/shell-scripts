@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+# dports - Port mapping viewer
+# List all exposed ports across containers and detect conflicts
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: dports [options] [port]
+
+List Docker port mappings and find port usage.
+
+Options:
+  -a, --all           Show all containers (including stopped)
+  -f, --find PORT     Find which container uses a specific port
+  -c, --conflicts     Check for port conflicts
+  -s, --sort          Sort by port number
+  -h, --help          Show this help
+
+Examples:
+  dports                  # Show all port mappings
+  dports 8080             # Find container using port 8080
+  dports --find 3000      # Same as above
+  dports --conflicts      # Check for port conflicts
+  dports --all            # Include stopped containers
+EOF
+}
+
+parse_ports() {
+    local container="$1"
+    local ports_str="$2"
+    
+    if [[ -z "$ports_str" ]] || [[ "$ports_str" == "null" ]]; then
+        return 0
+    fi
+    
+    # Parse Docker port format: 0.0.0.0:8080->80/tcp, :::8081->80/tcp
+    while IFS= read -r port_mapping; do
+        [[ -z "$port_mapping" ]] && continue
+        
+        # Extract host port and container port
+        if [[ "$port_mapping" =~ ([0-9]+)-\>([0-9]+)/(tcp|udp) ]]; then
+            local host_port="${BASH_REMATCH[1]}"
+            local container_port="${BASH_REMATCH[2]}"
+            local protocol="${BASH_REMATCH[3]}"
+            
+            # Extract host IP if present
+            local host_ip="0.0.0.0"
+            if [[ "$port_mapping" =~ ([0-9.]+):([0-9]+) ]]; then
+                host_ip="${BASH_REMATCH[1]}"
+            elif [[ "$port_mapping" =~ \[([a-f0-9:]+)\]:([0-9]+) ]]; then
+                host_ip="${BASH_REMATCH[1]}"
+            fi
+            
+            printf "%s\t%s\t%s\t%s/%s\t%s\n" \
+                "$container" \
+                "$host_ip" \
+                "$host_port" \
+                "$container_port" \
+                "$protocol" \
+                "$(docker ps -a --filter "name=^${container}$" --format "{{.Image}}")"
+        fi
+    done <<< "$ports_str"
+}
+
+show_all_ports() {
+    local all_flag=""
+    if [[ "$1" == "all" ]]; then
+        all_flag="-a"
+    fi
+    
+    # Get all containers with ports
+    local containers
+    containers=$(docker ps $all_flag --format "{{.Names}}\t{{.Ports}}" 2>/dev/null)
+    
+    if [[ -z "$containers" ]]; then
+        log_info "No containers with port mappings found"
+        return 0
+    fi
+    
+    # Print header
+    printf "${BOLD}%-25s %-15s %-10s %-15s %-30s${NC}\n" \
+        "CONTAINER" "HOST IP" "HOST PORT" "CONTAINER PORT" "IMAGE"
+    echo "-----------------------------------------------------------------------------------------"
+    
+    # Process each container
+    local has_ports=false
+    while IFS=$'\t' read -r container ports; do
+        if [[ -n "$ports" ]] && [[ "$ports" != "null" ]]; then
+            has_ports=true
+            # Split ports by comma and process each
+            IFS=',' read -ra port_array <<< "$ports"
+            for port in "${port_array[@]}"; do
+                parse_ports "$container" "$port"
+            done
+        fi
+    done <<< "$containers" | while IFS=$'\t' read -r container host_ip host_port container_port image; do
+        printf "%-25s %-15s ${GREEN}%-10s${NC} %-15s %-30s\n" \
+            "$container" "$host_ip" "$host_port" "$container_port" "$image"
+    done
+    
+    if ! $has_ports; then
+        echo "No port mappings found"
+    fi
+}
+
+find_port() {
+    local search_port="$1"
+    local all_flag="$2"
+    
+    if ! is_integer "$search_port"; then
+        die "Port must be a number"
+    fi
+    
+    log_info "Searching for containers using host port $search_port..."
+    echo ""
+    
+    # Get all containers with ports
+    local containers
+    containers=$(docker ps $all_flag --format "{{.Names}}\t{{.Ports}}" 2>/dev/null)
+    
+    if [[ -z "$containers" ]]; then
+        log_info "No containers found"
+        return 1
+    fi
+    
+    local found=false
+    while IFS=$'\t' read -r container ports; do
+        if [[ -n "$ports" ]] && [[ "$ports" != "null" ]]; then
+            # Check if this port is in the mapping
+            if echo "$ports" | grep -q ":${search_port}->"; then
+                found=true
+                local image status
+                image=$(docker ps -a --filter "name=^${container}$" --format "{{.Image}}")
+                status=$(docker ps -a --filter "name=^${container}$" --format "{{.Status}}")
+                
+                echo -e "${BOLD}Container:${NC} $container"
+                echo -e "${BOLD}Image:${NC}     $image"
+                echo -e "${BOLD}Status:${NC}    $status"
+                echo -e "${BOLD}Ports:${NC}     $ports"
+                echo ""
+            fi
+        fi
+    done <<< "$containers"
+    
+    if ! $found; then
+        log_warn "No container found using port $search_port"
+        
+        # Check if port is in use by non-Docker process
+        if have_cmd lsof; then
+            echo ""
+            log_info "Checking for non-Docker processes on port $search_port..."
+            if lsof -i ":$search_port" &>/dev/null; then
+                lsof -i ":$search_port"
+            else
+                log_info "Port $search_port is not in use"
+            fi
+        fi
+        return 1
+    fi
+}
+
+check_conflicts() {
+    log_info "Checking for port conflicts..."
+    echo ""
+    
+    # Get all port mappings (port -> container mapping)
+    local port_map=$(mktemp)
+    
+    docker ps -a --format "{{.Names}}\t{{.Ports}}" 2>/dev/null | while IFS=$'\t' read -r container ports; do
+        if [[ -n "$ports" ]] && [[ "$ports" != "null" ]]; then
+            # Extract host ports (deduplicate by port+container to handle IPv4/IPv6)
+            echo "$ports" | grep -oE '[0-9]+->([0-9]+)/(tcp|udp)' | while IFS= read -r mapping; do
+                if [[ "$mapping" =~ ([0-9]+)-\>([0-9]+)/(tcp|udp) ]]; then
+                    echo "${BASH_REMATCH[1]}\t$container"
+                fi
+            done | sort -u
+        fi
+    done > "$port_map"
+    
+    # Find ports used by multiple DIFFERENT containers
+    local has_conflicts=false
+    local checked_ports=$(mktemp)
+    
+    awk -F'\t' '{print $1}' "$port_map" | sort | uniq -d | while IFS= read -r port; do
+        # Get unique container names for this port
+        local containers
+        containers=$(grep "^${port}\t" "$port_map" | cut -f2 | sort -u)
+        local container_count
+        container_count=$(echo "$containers" | wc -l | tr -d ' ')
+        
+        # Only report if multiple DIFFERENT containers use the same port
+        if [[ $container_count -gt 1 ]]; then
+            if [[ "$has_conflicts" == "false" ]]; then
+                log_warn "Port conflicts detected:"
+                echo ""
+                has_conflicts=true
+            fi
+            
+            echo -e "${RED}Port $port${NC} is used by multiple containers:"
+            echo "$containers" | while IFS= read -r c; do
+                echo "  - $c"
+            done
+            echo ""
+            echo "true" > "$checked_ports"
+        fi
+    done
+    
+    if [[ ! -s "$checked_ports" ]]; then
+        log_success "No port conflicts detected"
+    fi
+    
+    rm "$port_map" "$checked_ports"
+}
+
+sort_by_port() {
+    local all_flag=""
+    if [[ "$1" == "all" ]]; then
+        all_flag="-a"
+    fi
+    
+    # Print header
+    printf "${BOLD}%-10s %-25s %-15s %-15s %-30s${NC}\n" \
+        "HOST PORT" "CONTAINER" "HOST IP" "CONTAINER PORT" "IMAGE"
+    echo "-----------------------------------------------------------------------------------------"
+    
+    # Get all containers with ports and sort by port
+    docker ps $all_flag --format "{{.Names}}\t{{.Ports}}" 2>/dev/null | while IFS=$'\t' read -r container ports; do
+        if [[ -n "$ports" ]] && [[ "$ports" != "null" ]]; then
+            IFS=',' read -ra port_array <<< "$ports"
+            for port in "${port_array[@]}"; do
+                parse_ports "$container" "$port"
+            done
+        fi
+    done | sort -t$'\t' -k3 -n | while IFS=$'\t' read -r container host_ip host_port container_port image; do
+        printf "${GREEN}%-10s${NC} %-25s %-15s %-15s %-30s\n" \
+            "$host_port" "$container" "$host_ip" "$container_port" "$image"
+    done
+}
+
+main() {
+    local show_all=false
+    local find_port_num=""
+    local check_conflicts_flag=false
+    local sort_flag=false
+    local search_port=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -a|--all)
+                show_all=true
+                shift
+                ;;
+            -f|--find)
+                find_port_num="$2"
+                shift 2
+                ;;
+            -c|--conflicts)
+                check_conflicts_flag=true
+                shift
+                ;;
+            -s|--sort)
+                sort_flag=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                search_port="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    local all_arg=""
+    if $show_all; then
+        all_arg="all"
+    fi
+    
+    # Check for conflicts
+    if $check_conflicts_flag; then
+        check_conflicts
+        exit 0
+    fi
+    
+    # Find specific port
+    if [[ -n "$find_port_num" ]]; then
+        find_port "$find_port_num" "$all_arg"
+        exit 0
+    fi
+    
+    # Search for port (positional argument)
+    if [[ -n "$search_port" ]]; then
+        find_port "$search_port" "$all_arg"
+        exit 0
+    fi
+    
+    # Show all ports
+    if $sort_flag; then
+        sort_by_port "$all_arg"
+    else
+        show_all_ports "$all_arg"
+    fi
+}
+
+main "$@"
+

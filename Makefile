@@ -139,7 +139,7 @@ check-deps: ## Check for optional dependencies
 	done
 
 list: ## List all available scripts
-	@echo "$(BLUE)Available scripts (37 total):$(NC)"
+	@echo "$(BLUE)Available scripts (47 total):$(NC)"
 	@echo ""
 	@ls -1 $(BIN_DIR) | pr -t -3 | sed 's/^/  /'
 	@echo ""
@@ -195,14 +195,14 @@ demo: ## Run a quick demo of popular scripts
 	@echo "$(YELLOW)3. timer - Countdown timer$(NC)"
 	@echo "   timer --help | head -10"
 	@echo ""
-	@echo "Run 'make list' to see all 37 scripts"
+	@echo "Run 'make list' to see all 47 scripts"
 	@echo "Run '<script-name> --help' for detailed usage"
 
 info: ## Show project information
 	@echo "$(BLUE)Shell Scripts Library$(NC)"
 	@echo ""
 	@echo "Version:      1.0.0"
-	@echo "Scripts:      37 utilities"
+	@echo "Scripts:      47 utilities"
 	@echo "Location:     $(CURDIR)"
 	@echo "Install dir:  $(INSTALL_DIR)"
 	@echo ""
@@ -210,13 +210,14 @@ info: ## Show project information
 	@echo "  • Clipboard (2)"
 	@echo "  • Filesystem & Dev (7)"
 	@echo "  • File Safety (2)"
-	@echo "  • Networking & Ops (6)"
+	@echo "  • Networking & Ops (7)"
 	@echo "  • Git (3)"
 	@echo "  • System Info (2)"
-	@echo "  • Docker & Kubernetes (4)"
+	@echo "  • Docker & Kubernetes (9)"
 	@echo "  • Cloud (1)"
 	@echo "  • Text & Data (5)"
 	@echo "  • Productivity (2)"
 	@echo "  • macOS Specific (3)"
+	@echo "  • Vercel Workflow (4)"
 	@echo ""
 	@echo "Run 'make help' for available commands"

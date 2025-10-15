@@ -61,22 +61,61 @@ show_local_ips() {
     echo ""
     
     if is_mac; then
-        ifconfig | grep -A 1 "flags=" | grep -v "^--"
+        # Parse ifconfig output for macOS
+        printf "%-12s %-8s %-40s\n" "INTERFACE" "STATUS" "IP ADDRESS"
+        echo "------------------------------------------------------------------------"
+        
+        ifconfig | awk '
+        /^[a-z]/ {
+            if (iface != "" && ip != "") {
+                printf "%-12s %-8s %-40s\n", iface, status, ip
+            }
+            iface = $1
+            gsub(/:/, "", iface)
+            status = "DOWN"
+            ip = ""
+            if ($0 ~ /UP/) status = "UP"
+        }
+        /inet / && !/127\.0\.0\.1/ {
+            if ($2 !~ /^fe80:/) {
+                if (ip != "") ip = ip ", "
+                ip = ip $2
+            }
+        }
+        /inet6 / && !/^fe80:/ && !/::1/ {
+            if ($2 !~ /^fe80:/) {
+                if (ip != "") ip = ip ", "
+                ip = ip $2
+            }
+        }
+        END {
+            if (iface != "" && ip != "") {
+                printf "%-12s %-8s %-40s\n", iface, status, ip
+            }
+        }
+        ' | grep -v "^lo " | head -20
     else
         if have_cmd ip; then
-            ip -br addr show | grep -v "^lo"
+            # Linux with ip command
+            printf "%-12s %-8s %-40s\n" "INTERFACE" "STATUS" "IP ADDRESS"
+            echo "------------------------------------------------------------------------"
+            ip -br addr show | grep -v "^lo" | awk '{printf "%-12s %-8s %-40s\n", $1, $2, $3}'
         elif have_cmd ifconfig; then
-            ifconfig | grep -A 1 "flags=" | grep -v "^--"
+            # Linux with ifconfig
+            ifconfig | grep -E "^[a-z]|inet " | grep -v "127.0.0.1" | \
+            awk '/^[a-z]/ {iface=$1} /inet / {print iface, $2}' | grep -v "^lo"
         fi
     fi
     
     echo ""
     echo -e "${BOLD}=== Default Gateway ===${NC}"
     if is_mac; then
-        netstat -rn | grep default
+        netstat -rn | grep "^default" | grep -v "fe80" | head -3 | \
+        awk '{printf "%-20s via %-15s dev %s\n", "default", $2, $NF}'
     else
         if have_cmd ip; then
-            ip route | grep default
+            ip route | grep default | head -1 | \
+            awk '{printf "%-20s via %-15s dev %s\n", $1, $3, $5}'
         else
             netstat -rn | grep "^0.0.0.0" | head -1
         fi

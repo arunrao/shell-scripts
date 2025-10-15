@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+# dclean - Comprehensive Docker cleanup
+# Removes stopped containers, unused volumes, networks, and build cache
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: dclean [options]
+
+Comprehensive Docker cleanup tool.
+
+Options:
+  -a, --all           Clean everything (containers, volumes, networks, cache)
+  -c, --containers    Remove stopped containers
+  -v, --volumes       Remove unused volumes
+  -n, --networks      Remove unused networks
+  -b, --build-cache   Remove build cache
+  -i, --images        Remove dangling images
+  -f, --force         Force removal without confirmation
+  -h, --help          Show this help
+
+Features:
+  - Remove stopped containers
+  - Remove unused volumes
+  - Remove unused networks
+  - Remove build cache
+  - Shows space reclaimed for each operation
+
+Examples:
+  dclean --all                    # Clean everything with confirmation
+  dclean -c -v                    # Clean containers and volumes
+  dclean --build-cache --force    # Clear build cache without confirmation
+  dclean -af                      # Nuclear option: clean everything, no confirm
+EOF
+}
+
+clean_containers() {
+    log_info "Checking for stopped containers..."
+    local stopped
+    stopped=$(docker ps -aq -f status=exited -f status=created 2>/dev/null)
+    
+    if [[ -z "$stopped" ]]; then
+        log_info "No stopped containers to remove"
+        return 0
+    fi
+    
+    local count
+    count=$(trim "$(echo "$stopped" | wc -l)")
+    log_info "Found $count stopped container(s)"
+    
+    if [[ "$1" != "force" ]]; then
+        docker ps -a -f status=exited -f status=created --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+        echo ""
+        if ! confirm "Remove these containers?" "y"; then
+            log_info "Skipping container cleanup"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing stopped containers..."
+    docker container prune -f
+    log_success "Containers cleaned"
+}
+
+clean_volumes() {
+    log_info "Checking for unused volumes..."
+    local unused
+    unused=$(docker volume ls -qf dangling=true 2>/dev/null)
+    
+    if [[ -z "$unused" ]]; then
+        log_info "No unused volumes to remove"
+        return 0
+    fi
+    
+    local count
+    count=$(trim "$(echo "$unused" | wc -l)")
+    log_warn "Found $count unused volume(s)"
+    
+    if [[ "$1" != "force" ]]; then
+        docker volume ls -f dangling=true
+        echo ""
+        log_warn "This will permanently delete volume data!"
+        if ! confirm "Remove these volumes?" "n"; then
+            log_info "Skipping volume cleanup"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing unused volumes..."
+    docker volume prune -f
+    log_success "Volumes cleaned"
+}
+
+clean_networks() {
+    log_info "Checking for unused networks..."
+    
+    if [[ "$1" != "force" ]]; then
+        if ! confirm "Remove unused networks?" "y"; then
+            log_info "Skipping network cleanup"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing unused networks..."
+    docker network prune -f
+    log_success "Networks cleaned"
+}
+
+clean_build_cache() {
+    log_info "Checking build cache..."
+    local cache_size
+    cache_size=$(docker system df -v 2>/dev/null | grep "Build Cache" | awk '{print $3}' || echo "unknown")
+    
+    if [[ "$cache_size" == "0B" ]] || [[ "$cache_size" == "0.0B" ]]; then
+        log_info "No build cache to remove"
+        return 0
+    fi
+    
+    log_info "Current build cache size: $cache_size"
+    
+    if [[ "$1" != "force" ]]; then
+        if ! confirm "Remove build cache?" "y"; then
+            log_info "Skipping build cache cleanup"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing build cache..."
+    docker builder prune -af
+    log_success "Build cache cleaned"
+}
+
+clean_images() {
+    log_info "Checking for dangling images..."
+    local dangling
+    dangling=$(docker images -f "dangling=true" -q 2>/dev/null)
+    
+    if [[ -z "$dangling" ]]; then
+        log_info "No dangling images to remove"
+        return 0
+    fi
+    
+    local count
+    count=$(trim "$(echo "$dangling" | wc -l)")
+    log_info "Found $count dangling image(s)"
+    
+    if [[ "$1" != "force" ]]; then
+        if ! confirm "Remove dangling images?" "y"; then
+            log_info "Skipping image cleanup"
+            return 0
+        fi
+    fi
+    
+    log_info "Removing dangling images..."
+    docker image prune -f
+    log_success "Images cleaned"
+}
+
+show_disk_usage() {
+    log_info "Docker disk usage:"
+    docker system df
+    echo ""
+}
+
+main() {
+    local force=false
+    local clean_all=false
+    local do_containers=false
+    local do_volumes=false
+    local do_networks=false
+    local do_build_cache=false
+    local do_images=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--force)
+                force=true
+                shift
+                ;;
+            -a|--all)
+                clean_all=true
+                shift
+                ;;
+            -c|--containers)
+                do_containers=true
+                shift
+                ;;
+            -v|--volumes)
+                do_volumes=true
+                shift
+                ;;
+            -n|--networks)
+                do_networks=true
+                shift
+                ;;
+            -b|--build-cache)
+                do_build_cache=true
+                shift
+                ;;
+            -i|--images)
+                do_images=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    # Show initial disk usage
+    show_disk_usage
+    
+    local force_arg=""
+    if $force; then
+        force_arg="force"
+    fi
+    
+    # If --all or no specific options, do everything
+    if $clean_all || ! ($do_containers || $do_volumes || $do_networks || $do_build_cache || $do_images); then
+        if $clean_all && ! $force; then
+            log_warn "This will clean all Docker resources"
+            if ! confirm "Proceed with complete cleanup?" "n"; then
+                log_info "Operation cancelled"
+                exit 0
+            fi
+            force_arg="force"  # Skip individual confirmations
+        fi
+        
+        clean_containers "$force_arg"
+        echo ""
+        clean_volumes "$force_arg"
+        echo ""
+        clean_networks "$force_arg"
+        echo ""
+        clean_build_cache "$force_arg"
+        echo ""
+        clean_images "$force_arg"
+    else
+        # Clean only selected resources
+        if $do_containers; then
+            clean_containers "$force_arg"
+            echo ""
+        fi
+        
+        if $do_volumes; then
+            clean_volumes "$force_arg"
+            echo ""
+        fi
+        
+        if $do_networks; then
+            clean_networks "$force_arg"
+            echo ""
+        fi
+        
+        if $do_build_cache; then
+            clean_build_cache "$force_arg"
+            echo ""
+        fi
+        
+        if $do_images; then
+            clean_images "$force_arg"
+            echo ""
+        fi
+    fi
+    
+    # Show final disk usage
+    log_success "Cleanup complete!"
+    echo ""
+    show_disk_usage
+}
+
+main "$@"
+

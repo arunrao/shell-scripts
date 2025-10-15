@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# dlogs - Container log viewer
+# View logs from Docker containers with search and follow capabilities
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: dlogs [options] [container]
+
+View logs from Docker containers.
+
+Options:
+  -f, --follow        Follow log output
+  -t, --tail N        Number of lines to show from end (default: all)
+  -s, --since TIME    Show logs since timestamp (e.g. 2h, 10m, 2024-01-01)
+  -u, --until TIME    Show logs until timestamp
+  -T, --timestamps    Show timestamps
+  -g, --grep PATTERN  Filter logs by pattern
+  -a, --all           Show logs from all containers
+  -h, --help          Show this help
+
+Examples:
+  dlogs                        # Interactive selection
+  dlogs myapp                  # Show logs from 'myapp' container
+  dlogs -f myapp               # Follow logs from 'myapp'
+  dlogs --tail 100 myapp       # Show last 100 lines
+  dlogs --since 1h myapp       # Show logs from last hour
+  dlogs -f --grep error myapp  # Follow and filter for 'error'
+  dlogs --all                  # Show logs from all containers
+EOF
+}
+
+select_container() {
+    local containers
+    containers=$(docker ps --format "{{.Names}}" 2>/dev/null)
+    
+    if [[ -z "$containers" ]]; then
+        die "No running containers found"
+    fi
+    
+    local count
+    count=$(trim "$(echo "$containers" | wc -l)")
+    
+    if [[ $count -eq 1 ]]; then
+        echo "$containers"
+        return 0
+    fi
+    
+    log_info "Select a container:"
+    echo ""
+    
+    local idx=1
+    while IFS= read -r container; do
+        local image status
+        image=$(docker ps --filter "name=$container" --format "{{.Image}}" | head -1)
+        status=$(docker ps --filter "name=$container" --format "{{.Status}}" | head -1)
+        printf "%2d) ${BOLD}%-30s${NC} ${CYAN}%-40s${NC} %s\n" "$idx" "$container" "$image" "$status"
+        idx=$((idx + 1))
+    done <<< "$containers"
+    
+    echo ""
+    read -r -p "Enter number (1-$count): " selection
+    
+    if ! is_integer "$selection" || [[ $selection -lt 1 ]] || [[ $selection -gt $count ]]; then
+        die "Invalid selection"
+    fi
+    
+    echo "$containers" | sed -n "${selection}p"
+}
+
+find_container() {
+    local pattern="$1"
+    local matches
+    matches=$(docker ps --filter "name=$pattern" --format "{{.Names}}" 2>/dev/null)
+    
+    if [[ -z "$matches" ]]; then
+        die "No running container found matching: $pattern"
+    fi
+    
+    local count
+    count=$(trim "$(echo "$matches" | wc -l)")
+    
+    if [[ $count -gt 1 ]]; then
+        log_warn "Multiple containers match '$pattern':"
+        echo "$matches"
+        die "Please be more specific"
+    fi
+    
+    echo "$matches"
+}
+
+show_all_logs() {
+    local docker_args=("$@")
+    
+    local containers
+    containers=$(docker ps --format "{{.Names}}" 2>/dev/null)
+    
+    if [[ -z "$containers" ]]; then
+        die "No running containers found"
+    fi
+    
+    log_info "Showing logs from all containers"
+    echo ""
+    
+    while IFS= read -r container; do
+        echo -e "${BOLD}${BLUE}=== $container ===${NC}"
+        docker logs "${docker_args[@]}" "$container" 2>&1 | sed "s/^/[$container] /"
+        echo ""
+    done <<< "$containers"
+}
+
+main() {
+    local follow=false
+    local tail_lines=""
+    local since=""
+    local until=""
+    local timestamps=false
+    local grep_pattern=""
+    local container=""
+    local show_all=false
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -f|--follow)
+                follow=true
+                shift
+                ;;
+            -t|--tail)
+                tail_lines="$2"
+                if ! is_integer "$tail_lines"; then
+                    die "Tail value must be a number"
+                fi
+                shift 2
+                ;;
+            -s|--since)
+                since="$2"
+                shift 2
+                ;;
+            -u|--until)
+                until="$2"
+                shift 2
+                ;;
+            -T|--timestamps)
+                timestamps=true
+                shift
+                ;;
+            -g|--grep)
+                grep_pattern="$2"
+                shift 2
+                ;;
+            -a|--all)
+                show_all=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                container="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    # Build docker logs arguments
+    local docker_args=()
+    
+    if $follow; then
+        docker_args+=("-f")
+    fi
+    
+    if [[ -n "$tail_lines" ]]; then
+        docker_args+=("--tail" "$tail_lines")
+    fi
+    
+    if [[ -n "$since" ]]; then
+        docker_args+=("--since" "$since")
+    fi
+    
+    if [[ -n "$until" ]]; then
+        docker_args+=("--until" "$until")
+    fi
+    
+    if $timestamps; then
+        docker_args+=("-t")
+    fi
+    
+    # Show logs from all containers
+    if $show_all; then
+        if $follow; then
+            die "Cannot follow logs from all containers. Use docker compose or select a specific container."
+        fi
+        show_all_logs "${docker_args[@]}"
+        exit 0
+    fi
+    
+    # Get container name
+    if [[ -z "$container" ]]; then
+        container=$(select_container)
+    else
+        container=$(find_container "$container")
+    fi
+    
+    log_info "Showing logs for: $container"
+    echo ""
+    
+    # Show logs
+    if [[ -n "$grep_pattern" ]]; then
+        if $follow; then
+            docker logs "${docker_args[@]}" "$container" 2>&1 | grep --color=always -i "$grep_pattern"
+        else
+            docker logs "${docker_args[@]}" "$container" 2>&1 | grep --color=always -i "$grep_pattern" || true
+        fi
+    else
+        docker logs "${docker_args[@]}" "$container" 2>&1
+    fi
+}
+
+main "$@"
+

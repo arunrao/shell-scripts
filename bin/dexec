@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# dexec - Interactive container shell
+# Quick access to running containers with auto-detected shell
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: dexec [options] [container] [command]
+
+Execute commands or open shell in Docker containers.
+
+Options:
+  -s, --shell SHELL   Specify shell to use (bash, sh, zsh, fish)
+  -u, --user USER     Run as specific user
+  -w, --workdir DIR   Working directory inside container
+  -e, --env KEY=VAL   Set environment variable
+  -h, --help          Show this help
+
+Examples:
+  dexec                          # Interactive selection, auto-detect shell
+  dexec myapp                    # Open shell in 'myapp' container
+  dexec myapp ls -la             # Run 'ls -la' in container
+  dexec --shell bash myapp       # Force bash shell
+  dexec --user root myapp        # Open shell as root
+  dexec -e DEBUG=1 myapp         # Set environment variable
+EOF
+}
+
+select_container() {
+    local containers
+    containers=$(docker ps --format "{{.Names}}" 2>/dev/null)
+    
+    if [[ -z "$containers" ]]; then
+        die "No running containers found"
+    fi
+    
+    local count
+    count=$(trim "$(echo "$containers" | wc -l)")
+    
+    if [[ $count -eq 1 ]]; then
+        echo "$containers"
+        return 0
+    fi
+    
+    log_info "Select a container:"
+    echo ""
+    
+    local idx=1
+    while IFS= read -r container; do
+        local image status
+        image=$(docker ps --filter "name=$container" --format "{{.Image}}" | head -1)
+        status=$(docker ps --filter "name=$container" --format "{{.Status}}" | head -1)
+        printf "%2d) ${BOLD}%-30s${NC} ${CYAN}%-40s${NC} %s\n" "$idx" "$container" "$image" "$status"
+        idx=$((idx + 1))
+    done <<< "$containers"
+    
+    echo ""
+    read -r -p "Enter number (1-$count): " selection
+    
+    if ! is_integer "$selection" || [[ $selection -lt 1 ]] || [[ $selection -gt $count ]]; then
+        die "Invalid selection"
+    fi
+    
+    echo "$containers" | sed -n "${selection}p"
+}
+
+find_container() {
+    local pattern="$1"
+    local matches
+    matches=$(docker ps --filter "name=$pattern" --format "{{.Names}}" 2>/dev/null)
+    
+    if [[ -z "$matches" ]]; then
+        die "No running container found matching: $pattern"
+    fi
+    
+    local count
+    count=$(trim "$(echo "$matches" | wc -l)")
+    
+    if [[ $count -gt 1 ]]; then
+        log_warn "Multiple containers match '$pattern':"
+        echo "$matches"
+        die "Please be more specific"
+    fi
+    
+    echo "$matches"
+}
+
+detect_shell() {
+    local container="$1"
+    
+    # Try shells in order of preference
+    local shells=("bash" "zsh" "fish" "sh")
+    
+    for shell in "${shells[@]}"; do
+        if docker exec "$container" which "$shell" &>/dev/null; then
+            echo "$shell"
+            return 0
+        fi
+    done
+    
+    # Fallback to sh
+    echo "sh"
+}
+
+main() {
+    local shell=""
+    local user=""
+    local workdir=""
+    local env_vars=()
+    local container=""
+    local command=()
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -s|--shell)
+                shell="$2"
+                shift 2
+                ;;
+            -u|--user)
+                user="$2"
+                shift 2
+                ;;
+            -w|--workdir)
+                workdir="$2"
+                shift 2
+                ;;
+            -e|--env)
+                env_vars+=("$2")
+                shift 2
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                if [[ -z "$container" ]]; then
+                    container="$1"
+                else
+                    command+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    # Get container name
+    if [[ -z "$container" ]]; then
+        container=$(select_container)
+    else
+        container=$(find_container "$container")
+    fi
+    
+    # Build docker exec arguments
+    local docker_args=()
+    
+    # If no command specified, open interactive shell
+    local is_interactive=false
+    if [[ ${#command[@]:-0} -eq 0 ]]; then
+        is_interactive=true
+        docker_args+=("-it")
+    fi
+    
+    if [[ -n "$user" ]]; then
+        docker_args+=("--user" "$user")
+    fi
+    
+    if [[ -n "$workdir" ]]; then
+        docker_args+=("--workdir" "$workdir")
+    fi
+    
+    if [[ ${#env_vars[@]} -gt 0 ]]; then
+        for env_var in "${env_vars[@]}"; do
+            docker_args+=("--env" "$env_var")
+        done
+    fi
+    
+    docker_args+=("$container")
+    
+    if $is_interactive; then
+        if [[ -z "$shell" ]]; then
+            shell=$(detect_shell "$container")
+            log_info "Opening $shell in: $container"
+        else
+            log_info "Opening $shell in: $container"
+        fi
+        docker_args+=("$shell")
+    else
+        log_info "Executing in: $container"
+        if [[ ${#command[@]} -gt 0 ]]; then
+            docker_args+=("${command[@]}")
+        fi
+    fi
+    
+    # Execute
+    docker exec "${docker_args[@]}"
+}
+
+main "$@"
+

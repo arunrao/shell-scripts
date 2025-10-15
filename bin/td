@@ -100,7 +100,7 @@ mark_done() {
     
     ensure_todo_file
     local total
-    total=$(wc -l < "$TODO_FILE" | trim)
+    total=$(trim "$(wc -l < "$TODO_FILE")")
     
     if [[ $num -lt 1 ]] || [[ $num -gt $total ]]; then
         die "Todo number out of range: $num (1-$total)"
@@ -114,8 +114,11 @@ mark_done() {
         return
     fi
     
-    sed -i.bak "${num}s/^\[ \]/[x]/" "$TODO_FILE"
-    rm -f "$TODO_FILE.bak"
+    # Use temp file for portability (BSD/GNU sed compatibility)
+    local tmp_file
+    tmp_file=$(mktemp)
+    sed "${num}s/^\[ \]/[x]/" "$TODO_FILE" > "$tmp_file"
+    mv "$tmp_file" "$TODO_FILE"
     
     log_success "Marked done: ${line:4}"
 }
@@ -129,7 +132,7 @@ remove_todo() {
     
     ensure_todo_file
     local total
-    total=$(wc -l < "$TODO_FILE" | trim)
+    total=$(trim "$(wc -l < "$TODO_FILE")")
     
     if [[ $num -lt 1 ]] || [[ $num -gt $total ]]; then
         die "Todo number out of range: $num (1-$total)"
@@ -141,8 +144,11 @@ remove_todo() {
     
     log_warn "Removing: ${line:4}"
     if confirm "Are you sure?" "n"; then
-        sed -i.bak "${num}d" "$TODO_FILE"
-        rm -f "$TODO_FILE.bak"
+        # Use temp file for portability (BSD/GNU sed compatibility)
+        local tmp_file
+        tmp_file=$(mktemp)
+        sed "${num}d" "$TODO_FILE" > "$tmp_file"
+        mv "$tmp_file" "$TODO_FILE"
         log_success "Removed todo #$num"
     else
         log_info "Cancelled"

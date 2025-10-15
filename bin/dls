@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# dls - Enhanced Docker listing
+# Shows containers, images, volumes, and networks with formatted output
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: dls [options]
+
+Enhanced Docker listing with formatted output.
+
+Options:
+  -c, --containers    Show containers (default)
+  -a, --all           Show all containers (including stopped)
+  -i, --images        Show images
+  -v, --volumes       Show volumes
+  -n, --networks      Show networks
+  -s, --stats         Show resource statistics
+  -A, --all-resources Show all resources
+  -q, --quiet         Show only IDs/names
+  -h, --help          Show this help
+
+Examples:
+  dls                     # Show running containers
+  dls --all               # Show all containers
+  dls --images            # Show images
+  dls --all-resources     # Show everything
+  dls -c -i -v            # Show containers, images, and volumes
+  dls --stats             # Show container resource stats
+EOF
+}
+
+show_containers() {
+    local all_flag=""
+    if [[ "$1" == "all" ]]; then
+        all_flag="-a"
+    fi
+    
+    local count
+    count=$(trim "$(docker ps $all_flag -q 2>/dev/null | wc -l)")
+    
+    if [[ $count -eq 0 ]]; then
+        if [[ "$1" == "all" ]]; then
+            log_info "No containers found"
+        else
+            log_info "No running containers"
+        fi
+        return 0
+    fi
+    
+    echo -e "${BOLD}${BLUE}Containers${NC} ${CYAN}($count)${NC}"
+    docker ps $all_flag --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+}
+
+show_images() {
+    local count
+    count=$(trim "$(docker images -q 2>/dev/null | wc -l)")
+    
+    if [[ $count -eq 0 ]]; then
+        log_info "No images found"
+        return 0
+    fi
+    
+    echo -e "${BOLD}${BLUE}Images${NC} ${CYAN}($count)${NC}"
+    docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}"
+    
+    # Show total size
+    local total_size
+    total_size=$(docker images --format "{{.Size}}" | grep -v SIZE | sed 's/[^0-9.]//g' | awk '{sum+=$1} END {print sum}')
+    if [[ -n "$total_size" ]] && [[ "$total_size" != "0" ]]; then
+        echo -e "${CYAN}Total size: ~${total_size}MB${NC}"
+    fi
+}
+
+show_volumes() {
+    local count
+    count=$(trim "$(docker volume ls -q 2>/dev/null | wc -l)")
+    
+    if [[ $count -eq 0 ]]; then
+        log_info "No volumes found"
+        return 0
+    fi
+    
+    echo -e "${BOLD}${BLUE}Volumes${NC} ${CYAN}($count)${NC}"
+    docker volume ls --format "table {{.Name}}\t{{.Driver}}\t{{.Scope}}"
+}
+
+show_networks() {
+    local count
+    count=$(trim "$(docker network ls -q 2>/dev/null | wc -l)")
+    
+    if [[ $count -eq 0 ]]; then
+        log_info "No networks found"
+        return 0
+    fi
+    
+    echo -e "${BOLD}${BLUE}Networks${NC} ${CYAN}($count)${NC}"
+    docker network ls --format "table {{.Name}}\t{{.Driver}}\t{{.Scope}}"
+}
+
+show_stats() {
+    local running
+    running=$(docker ps -q 2>/dev/null)
+    
+    if [[ -z "$running" ]]; then
+        log_info "No running containers to show stats for"
+        return 0
+    fi
+    
+    echo -e "${BOLD}${BLUE}Container Resource Statistics${NC}"
+    echo ""
+    docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}\t{{.BlockIO}}"
+}
+
+show_disk_usage() {
+    echo -e "${BOLD}${BLUE}Docker Disk Usage${NC}"
+    docker system df
+}
+
+main() {
+    local show_all=false
+    local show_containers_flag=false
+    local show_images_flag=false
+    local show_volumes_flag=false
+    local show_networks_flag=false
+    local show_stats_flag=false
+    local show_all_resources=false
+    local containers_all=""
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -c|--containers)
+                show_containers_flag=true
+                shift
+                ;;
+            -a|--all)
+                show_all=true
+                containers_all="all"
+                shift
+                ;;
+            -i|--images)
+                show_images_flag=true
+                shift
+                ;;
+            -v|--volumes)
+                show_volumes_flag=true
+                shift
+                ;;
+            -n|--networks)
+                show_networks_flag=true
+                shift
+                ;;
+            -s|--stats)
+                show_stats_flag=true
+                shift
+                ;;
+            -A|--all-resources)
+                show_all_resources=true
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+    
+    need_cmd docker
+    
+    # Check if Docker daemon is running
+    if ! docker info &>/dev/null; then
+        die "Docker daemon is not running"
+    fi
+    
+    # If --all-resources or no specific flags, show everything
+    if $show_all_resources; then
+        show_containers "all"
+        echo ""
+        show_images
+        echo ""
+        show_volumes
+        echo ""
+        show_networks
+        echo ""
+        show_disk_usage
+        return 0
+    fi
+    
+    # If no specific resource selected, default to containers
+    if ! ($show_containers_flag || $show_images_flag || $show_volumes_flag || $show_networks_flag || $show_stats_flag); then
+        show_containers_flag=true
+    fi
+    
+    local first=true
+    
+    if $show_stats_flag; then
+        show_stats
+        first=false
+    fi
+    
+    if $show_containers_flag; then
+        if ! $first; then echo ""; fi
+        show_containers "$containers_all"
+        first=false
+    fi
+    
+    if $show_images_flag; then
+        if ! $first; then echo ""; fi
+        show_images
+        first=false
+    fi
+    
+    if $show_volumes_flag; then
+        if ! $first; then echo ""; fi
+        show_volumes
+        first=false
+    fi
+    
+    if $show_networks_flag; then
+        if ! $first; then echo ""; fi
+        show_networks
+        first=false
+    fi
+}
+
+main "$@"
+
