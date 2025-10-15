@@ -81,7 +81,7 @@ get_macos_wifi_info() {
     # Try system_profiler first - most reliable for detecting WiFi connection
     log_debug "Checking WiFi status with system_profiler..."
     local wifi_status
-    wifi_status=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 2 "Status:")
+    wifi_status=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 2 "Status:" || true)
     
     local is_wifi_connected=false
     if echo "$wifi_status" | grep -q "Status: Connected"; then
@@ -96,11 +96,11 @@ get_macos_wifi_info() {
     if [[ -z "$ssid" ]] || [[ "$ssid" == *"not associated"* ]]; then
         if $is_wifi_connected; then
             # Try to extract SSID from ipconfig getsummary (more reliable)
-            ssid=$(ipconfig getsummary "$interface" 2>/dev/null | grep "SSID" | head -1 | awk -F': ' '{print $2}' | xargs)
+            ssid=$(ipconfig getsummary "$interface" 2>/dev/null | grep "SSID" | head -1 | awk -F': ' '{print $2}' | xargs || true)
             
             # If that fails, try ioreg
             if [[ -z "$ssid" ]] || [[ "$ssid" == "<redacted>" ]]; then
-                ssid=$(ioreg -l -n AppleBCMWLANCore 2>/dev/null | grep "IO80211SSID" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+                ssid=$(ioreg -l -n AppleBCMWLANCore 2>/dev/null | grep "IO80211SSID" | head -1 | sed 's/.*"\(.*\)".*/\1/' || true)
             fi
             
             # If still empty or is <redacted>, just mark as connected but hidden
@@ -110,11 +110,11 @@ get_macos_wifi_info() {
         else
             # Not connected via WiFi at all
             local status
-            status=$(ifconfig "$interface" 2>/dev/null | grep "status:" | awk '{print $2}')
+            status=$(ifconfig "$interface" 2>/dev/null | grep "status:" | awk '{print $2}' || true)
             
             if [[ "$status" == "active" ]]; then
                 local ip_addr
-                ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null)
+                ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null || true)
                 if [[ -n "$ip_addr" ]]; then
                     log_info "Interface $interface is active (${ip_addr})"
                     log_warn "Not connected via WiFi - may be wired/thunderbolt network"
@@ -134,7 +134,7 @@ get_macos_wifi_info() {
     
     # Get IP address
     local ip_addr
-    ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null)
+    ip_addr=$(ipconfig getifaddr "$interface" 2>/dev/null || true)
     if [[ -n "$ip_addr" ]]; then
         printf "%-20s %s\n" "IP Address:" "$ip_addr"
     fi
@@ -142,7 +142,7 @@ get_macos_wifi_info() {
     # Try to get more details from system_profiler (slower but more info)
     log_debug "Getting detailed WiFi information..."
     local wifi_details
-    wifi_details=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 30 "Current Network")
+    wifi_details=$(system_profiler SPAirPortDataType 2>/dev/null | grep -A 30 "Current Network" || true)
     
     if [[ -n "$wifi_details" ]]; then
         local channel security signal
@@ -240,9 +240,9 @@ test_connectivity() {
     # Test 1: Ping gateway
     local gateway
     if is_mac; then
-        gateway=$(netstat -rn | grep "^default" | grep -v "fe80" | head -1 | awk '{print $2}')
+        gateway=$(netstat -rn | grep "^default" | grep -v "fe80" | head -1 | awk '{print $2}' || true)
     else
-        gateway=$(ip route | grep default | head -1 | awk '{print $3}')
+        gateway=$(ip route | grep default | head -1 | awk '{print $3}' || true)
     fi
     
     if [[ -n "$gateway" ]]; then
@@ -260,7 +260,6 @@ test_connectivity() {
         echo -e "${GREEN}✓ Working${NC}"
     else
         echo -e "${RED}✗ Failed${NC}"
-        return 1
     fi
     
     # Test 3: Internet connectivity (HTTP)
@@ -270,14 +269,12 @@ test_connectivity() {
             echo -e "${GREEN}✓ Connected${NC}"
         else
             echo -e "${RED}✗ No Connection${NC}"
-            return 1
         fi
     elif have_cmd wget; then
         if wget -q --timeout=5 --spider https://www.google.com 2>/dev/null; then
             echo -e "${GREEN}✓ Connected${NC}"
         else
             echo -e "${RED}✗ No Connection${NC}"
-            return 1
         fi
     else
         echo -e "${YELLOW}? Cannot test (curl/wget not found)${NC}"
