@@ -44,6 +44,46 @@ Examples:
 EOF
 }
 
+format_time() {
+    local time_sec="$1"
+    # Convert to milliseconds for better readability
+    local time_ms=$(echo "$time_sec * 1000" | bc)
+    printf "%.0f ms" "$time_ms"
+}
+
+format_size() {
+    local bytes="$1"
+    if [[ $bytes -lt 1024 ]]; then
+        echo "${bytes} B"
+    elif [[ $bytes -lt 1048576 ]]; then
+        echo "$(echo "scale=1; $bytes / 1024" | bc) KB"
+    else
+        echo "$(echo "scale=1; $bytes / 1048576" | bc) MB"
+    fi
+}
+
+get_status_indicator() {
+    local code="$1"
+    if [[ $code -ge 200 && $code -lt 300 ]]; then
+        echo "✓"
+    elif [[ $code -ge 300 && $code -lt 400 ]]; then
+        echo "→"
+    else
+        echo "✗"
+    fi
+}
+
+get_status_color() {
+    local code="$1"
+    if [[ $code -ge 200 && $code -lt 300 ]]; then
+        echo "$GREEN"
+    elif [[ $code -ge 300 && $code -lt 400 ]]; then
+        echo "$YELLOW"
+    else
+        echo "$RED"
+    fi
+}
+
 main() {
     local url=""
     local retries=3
@@ -89,48 +129,135 @@ main() {
     
     need_cmd curl
     
-    log_info "Probing: $url"
-    log_info "Retries: $retries | Timeout: ${timeout}s"
+    # Check for bc (for time formatting)
+    if ! have_cmd bc; then
+        log_warn "bc not found - timing will be shown in seconds"
+    fi
+    
+    echo -e "${BOLD}=== Probing URL ===${NC}"
+    echo -e "${CYAN}$url${NC}"
     echo ""
+    
+    # Create temp files
+    local output headers timing
+    output=$(mktemp)
+    headers=$(mktemp)
+    timing=$(mktemp)
+    trap 'rm -f "$output" "$headers" "$timing" 2>/dev/null || true' EXIT
     
     local attempt=1
     local delay=2
     
     while [[ $attempt -le $retries ]]; do
-        log_info "Attempt $attempt/$retries..."
-        
-        local output
-        output=$(mktemp)
-        trap 'rm -f "$output"' EXIT
+        if [[ $attempt -gt 1 ]]; then
+            log_info "Attempt $attempt/$retries..."
+        fi
         
         # Perform curl with timing
-        if curl -w "\n\n--- Timing ---\nDNS Lookup:    %{time_namelookup}s\nTCP Connect:   %{time_connect}s\nTLS Handshake: %{time_appconnect}s\nStart Transfer:%{time_starttransfer}s\nTotal Time:    %{time_total}s\n\n--- Response ---\nHTTP Code:     %{http_code}\nSize:          %{size_download} bytes\n" \
+        local curl_exit=0
+        curl -w "%{json}" \
            --max-time "$timeout" \
-           ${verbose:+-v} \
            -s -S -L \
+           -D "$headers" \
            -o "$output" \
-           "$url" 2>&1; then
+           "$url" > "$timing" 2>&1 || curl_exit=$?
+        
+        if [[ $curl_exit -eq 0 ]]; then
+            # Parse timing JSON
+            local http_code dns_time connect_time tls_time transfer_time total_time size
+            http_code=$(grep -o '"http_code":[0-9]*' "$timing" | cut -d: -f2 || echo "0")
+            dns_time=$(grep -o '"time_namelookup":[0-9.]*' "$timing" | cut -d: -f2 || echo "0")
+            connect_time=$(grep -o '"time_connect":[0-9.]*' "$timing" | cut -d: -f2 || echo "0")
+            tls_time=$(grep -o '"time_appconnect":[0-9.]*' "$timing" | cut -d: -f2 || echo "0")
+            transfer_time=$(grep -o '"time_starttransfer":[0-9.]*' "$timing" | cut -d: -f2 || echo "0")
+            total_time=$(grep -o '"time_total":[0-9.]*' "$timing" | cut -d: -f2 || echo "0")
+            size=$(grep -o '"size_download":[0-9]*' "$timing" | cut -d: -f2 || echo "0")
             
-            log_success "Request successful"
+            # Display results
+            local status_color=$(get_status_color "$http_code")
+            local status_icon=$(get_status_indicator "$http_code")
             
-            # Show response body if verbose
-            if $verbose && [[ -s "$output" ]]; then
-                echo ""
-                echo "--- Response Body ---"
-                head -c 1000 "$output"
-                if [[ $(wc -c < "$output") -gt 1000 ]]; then
-                    echo "... (truncated)"
+            echo -e "${BOLD}${status_color}${status_icon} Response Status${NC}"
+            echo -e "  HTTP ${BOLD}$http_code${NC} - $(format_size "$size")"
+            echo ""
+            
+            echo -e "${BOLD}⏱  Timing Breakdown${NC}"
+            if have_cmd bc; then
+                printf "  %-20s %s\n" "DNS Lookup:" "$(format_time "$dns_time")"
+                printf "  %-20s %s\n" "TCP Connect:" "$(format_time "$connect_time")"
+                if [[ "$url" =~ ^https:// ]] && [[ "$tls_time" != "0.000000" ]]; then
+                    printf "  %-20s %s\n" "TLS Handshake:" "$(format_time "$tls_time")"
                 fi
+                printf "  %-20s %s\n" "Server Processing:" "$(format_time "$transfer_time")"
+                printf "  ${BOLD}%-20s %s${NC}\n" "Total:" "$(format_time "$total_time")"
+            else
+                printf "  %-20s %.3fs\n" "DNS Lookup:" "$dns_time"
+                printf "  %-20s %.3fs\n" "TCP Connect:" "$connect_time"
+                if [[ "$url" =~ ^https:// ]] && [[ "$tls_time" != "0.000000" ]]; then
+                    printf "  %-20s %.3fs\n" "TLS Handshake:" "$tls_time"
+                fi
+                printf "  %-20s %.3fs\n" "Server Processing:" "$transfer_time"
+                printf "  ${BOLD}%-20s %.3fs${NC}\n" "Total:" "$total_time"
             fi
+            echo ""
+            
+            # Show response headers (first few important ones)
+            echo -e "${BOLD}📋 Response Headers${NC}"
+            grep -E "^(HTTP/|Server:|Content-Type:|Content-Length:|Cache-Control:|Set-Cookie:)" "$headers" | head -10 || true
+            echo ""
             
             # Show TLS info for HTTPS
             if [[ "$url" =~ ^https:// ]]; then
+                echo -e "${BOLD}🔒 TLS Certificate${NC}"
+                local host
+                host=$(echo "$url" | sed -E 's|^https://([^/:]+).*|\1|')
+                local tls_info
+                tls_info=$(timeout 5 openssl s_client -connect "${host}:443" -servername "$host" </dev/null 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>/dev/null || true)
+                
+                if [[ -n "$tls_info" ]]; then
+                    echo "$tls_info" | while IFS= read -r line; do
+                        if [[ "$line" =~ ^notBefore= ]]; then
+                            echo "  Valid From:  ${line#notBefore=}"
+                        elif [[ "$line" =~ ^notAfter= ]]; then
+                            echo "  Valid Until: ${line#notAfter=}"
+                        elif [[ "$line" =~ ^subject= ]]; then
+                            echo "  Subject:     ${line#subject=}"
+                        elif [[ "$line" =~ ^issuer= ]]; then
+                            echo "  Issuer:      ${line#issuer=}"
+                        fi
+                    done
+                else
+                    log_warn "  Could not retrieve TLS certificate info"
+                fi
                 echo ""
-                echo "--- TLS Certificate ---"
-                timeout 5 openssl s_client -connect "$(echo "$url" | sed -E 's|^https://([^/]+).*|\1|'):443" -servername "$(echo "$url" | sed -E 's|^https://([^/]+).*|\1|')" </dev/null 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>/dev/null || log_warn "Could not retrieve TLS info"
             fi
             
-            rm -f "$output"
+            # Show response body if verbose
+            if $verbose && [[ -s "$output" ]]; then
+                echo -e "${BOLD}📄 Response Body${NC}"
+                local body_size
+                body_size=$(wc -c < "$output")
+                if [[ $body_size -gt 1000 ]]; then
+                    head -c 1000 "$output"
+                    echo ""
+                    echo -e "${CYAN}... (showing first 1000 of $body_size bytes)${NC}"
+                else
+                    cat "$output"
+                fi
+                echo ""
+            fi
+            
+            # Summary
+            echo -e "${BOLD}${GREEN}✓ Success${NC}"
+            if have_cmd bc; then
+                echo -e "  Completed in $(format_time "$total_time")"
+            else
+                printf "  Completed in %.3fs\n" "$total_time"
+            fi
+            
+            # Clean up and clear trap before returning
+            rm -f "$output" "$headers" "$timing" 2>/dev/null || true
+            trap - EXIT
             return 0
         fi
         
@@ -143,7 +270,9 @@ main() {
         attempt=$((attempt + 1))
     done
     
-    rm -f "$output"
+    # Clean up and clear trap before dying
+    rm -f "$output" "$headers" "$timing" 2>/dev/null || true
+    trap - EXIT
     die "All $retries attempts failed"
 }
 
