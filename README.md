@@ -1,6 +1,6 @@
 # Shell Scripts Library
 
-A collection of 47 cross-platform shell utilities for macOS and Linux users.
+A collection of 49 cross-platform shell utilities for macOS and Linux users.
 
 ## Features
 
@@ -106,9 +106,10 @@ gpr 123                     # Checkout PR #123
 - `gdirty` - Show uncommitted files across git repos
 - `gpr` - Fetch and checkout GitHub PR by number
 
-### System Info (2)
+### System Info (3)
 - `sysinfo` - CPU/memory/disk/battery info with smart fallbacks
 - `upto` - System uptime and boot history
+- `sys-help` - Discover and list all installed shell scripts
 
 ### Docker & Kubernetes (9)
 - `dclean` - Comprehensive Docker cleanup (containers, volumes, networks, cache)
@@ -135,10 +136,11 @@ gpr 123                     # Checkout PR #123
 - `td` - Tiny todo list manager (plaintext)
 - `timer` - CLI countdown timer with visual progress
 
-### macOS Specific (3)
+### macOS Specific (4)
 - `darkmode` - Toggle/read macOS appearance mode
 - `killdock` - Restart Dock, Finder, SystemUIServer
 - `showhidden` - Toggle Finder hidden files visibility
+- `mac-clean` - Clean up macOS system, user, and developer caches to recover space
 
 ### Vercel Workflow (4)
 - `vscope` - Manage Vercel scope/team (set once, use everywhere)
@@ -321,7 +323,7 @@ make help            # Show all available commands
 make install         # Install to ~/.local/bin (recommended)
 make test            # Verify all scripts are accessible
 make check-deps      # Check for optional dependencies
-make list            # List all 47 scripts
+make list            # List all 49 scripts
 make update          # Pull latest changes from git
 make uninstall       # Remove installed scripts
 make info            # Show project information

@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# mac-clean - Clean up macOS system, user, and developer caches to recover space
+# Safely estimates or removes temporary files, trash, and caches
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: mac-clean [options]
+
+Recover HDD space by cleaning up macOS caches, logs, trash, and developer tools.
+By default, safely estimates space that can be recovered without deleting anything.
+
+Options:
+  -e, --estimate  Estimate recoverable space (default behavior)
+  -c, --clean     Actually clean the files (prompts for confirmation)
+  -f, --force     Clean without prompting for confirmation
+  -h, --help      Show this help
+
+Categories cleaned:
+  - System Caches (~/Library/Caches)
+  - Logs (~/Library/Logs)
+  - Trash (~/.Trash)
+  - Xcode DerivedData & Simulator Caches
+  - Node/Yarn/Pip/Homebrew Caches (if installed)
+
+Examples:
+  mac-clean              # Estimate recoverable space
+  mac-clean --clean      # Clean with confirmation prompts
+  mac-clean --force      # Clean everything without asking
+EOF
+}
+
+format_bytes() {
+    local bytes=$1
+    if [[ $bytes -lt 1024 ]]; then
+        echo "${bytes} B"
+    elif [[ $bytes -lt 1048576 ]]; then
+        echo "$(( (bytes + 512) / 1024 )) KB"
+    elif [[ $bytes -lt 1073741824 ]]; then
+        echo "$(( (bytes + 524288) / 1048576 )) MB"
+    else
+        # Calculate GB with 2 decimal places using awk
+        echo "$bytes" | awk '{ printf "%.2f GB\n", $1 / 1073741824 }'
+    fi
+}
+
+get_dir_size() {
+    local dir="$1"
+    if [[ -d "$dir" ]]; then
+        # Use du -s to get total size in bytes (512-byte blocks on macOS)
+        local blocks
+        # Suppress stderr, then grab the first column. If it's empty, default to 0. Use || true to prevent set -e exiting
+        blocks=$(du -s "$dir" 2>/dev/null | awk '{print $1}' || true)
+        if [[ -z "$blocks" ]]; then
+            blocks=0
+        fi
+        echo $((blocks * 512))
+    else
+        echo 0
+    fi
+}
+
+get_cmd_cache_size() {
+    local cmd="$1"
+    local cache_dir="$2"
+    
+    if have_cmd "$cmd" && [[ -d "$cache_dir" ]]; then
+        get_dir_size "$cache_dir"
+    else
+        echo 0
+    fi
+}
+
+process_category() {
+    local name="$1"
+    local path="$2"
+    local mode="$3"
+    
+    local size=0
+    
+    if [[ "$path" == "CMD:"* ]]; then
+        # Special command-based cache (e.g. brew, npm)
+        local cmd_info="${path#CMD:}"
+        local cmd="${cmd_info%%:*}"
+        local cache_path="${cmd_info#*:}"
+        
+        # Resolve real path if it starts with ~
+        if [[ "$cache_path" == "~/"* ]]; then
+            cache_path="${HOME}/${cache_path#~/}"
+        fi
+        
+        size=$(get_cmd_cache_size "$cmd" "$cache_path")
+        
+        if [[ $size -gt 0 ]]; then
+            if [[ "$mode" == "clean" || "$mode" == "force" ]]; then
+                if [[ "$mode" == "force" ]] || confirm "Clean $name ($(format_bytes $size))?"; then
+                    if [[ "$cmd" == "brew" ]]; then
+                        brew cleanup --prune=all >/dev/null 2>&1 || true
+                    elif [[ "$cmd" == "npm" ]]; then
+                        npm cache clean --force >/dev/null 2>&1 || true
+                    elif [[ "$cmd" == "yarn" ]]; then
+                        yarn cache clean >/dev/null 2>&1 || true
+                    elif [[ "$cmd" == "pip" ]]; then
+                        pip cache purge >/dev/null 2>&1 || true
+                    else
+                        rm -rf "${cache_path:?}"/* 2>/dev/null || true
+                    fi
+                    log_success "Cleaned $name (freed $(format_bytes $size))"
+                    echo $size
+                    return 0
+                else
+                    log_info "Skipped $name"
+                    echo 0
+                    return 0
+                fi
+            else
+                # Print to stderr so we can capture stdout
+                printf "  %-30s %10s\n" "$name" "$(format_bytes $size)" >&2
+                echo $size
+                return 0
+            fi
+        fi
+    else
+        # Resolve real path if it starts with ~
+        local real_path="$path"
+        if [[ "$path" == "~/"* ]]; then
+            real_path="${HOME}/${path#~/}"
+        fi
+        
+        size=$(get_dir_size "$real_path")
+        
+        if [[ $size -gt 0 ]]; then
+            if [[ "$mode" == "clean" || "$mode" == "force" ]]; then
+                if [[ "$mode" == "force" ]] || confirm "Clean $name ($(format_bytes $size))?"; then
+                    rm -rf "${real_path:?}"/* 2>/dev/null || true
+                    log_success "Cleaned $name (freed $(format_bytes $size))"
+                    echo $size
+                    return 0
+                else
+                    log_info "Skipped $name"
+                    echo 0
+                    return 0
+                fi
+            else
+                # Print to stderr so we can capture stdout
+                printf "  %-30s %10s\n" "$name" "$(format_bytes $size)" >&2
+                echo $size
+                return 0
+            fi
+        fi
+    fi
+    
+    echo 0
+    return 0
+}
+
+main() {
+    if ! is_mac; then
+        die "This script is designed exclusively for macOS."
+    fi
+
+    local mode="estimate"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -e|--estimate)
+                mode="estimate"
+                shift
+                ;;
+            -c|--clean)
+                mode="clean"
+                shift
+                ;;
+            -f|--force)
+                mode="force"
+                shift
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+
+    # Define categories (Name | Path or CMD:command:path)
+    # Using arrays to maintain order
+    local -a cat_names=(
+        "User Trash"
+        "User Caches"
+        "User Logs"
+        "System Caches"
+        "System Logs"
+        "Xcode DerivedData"
+        "iOS Simulator Caches"
+        "Homebrew Cache"
+        "NPM Cache"
+        "Yarn Cache"
+        "Pip Cache"
+    )
+    
+    local brew_cache=""
+    if have_cmd brew; then
+        brew_cache=$(brew --cache 2>/dev/null || echo "")
+    fi
+    
+    local -a cat_paths=(
+        "~/.Trash"
+        "~/Library/Caches"
+        "~/Library/Logs"
+        "/Library/Caches"
+        "/Library/Logs"
+        "~/Library/Developer/Xcode/DerivedData"
+        "~/Library/Developer/CoreSimulator/Caches"
+        "CMD:brew:${brew_cache:-/Users/dummy/dummy}"
+        "CMD:npm:~/.npm"
+        "CMD:yarn:~/Library/Caches/Yarn"
+        "CMD:pip:~/.cache/pip"
+    )
+
+    local total_size=0
+    local size=0
+
+    if [[ "$mode" == "estimate" ]]; then
+        echo -e "${BLUE}Estimating Recoverable Space...${NC}"
+        echo ""
+        echo -e "${BOLD}Category                         Space${NC}"
+        echo "----------------------------------------"
+        
+        for i in "${!cat_names[@]}"; do
+            size=$(process_category "${cat_names[$i]}" "${cat_paths[$i]}" "estimate")
+            # Handle empty returns just in case
+            if [[ -n "$size" && "$size" =~ ^[0-9]+$ ]]; then
+                total_size=$((total_size + size))
+            fi
+        done
+        
+        echo "----------------------------------------"
+        echo -e "${BOLD}Total Recoverable:${NC}             ${GREEN}$(format_bytes $total_size)${NC}"
+        echo ""
+        echo "Run 'mac-clean --clean' to selectively clear these files"
+        echo "Run 'mac-clean --force' to clear EVERYTHING instantly"
+    
+    else
+        echo -e "${BLUE}Cleaning macOS System...${NC}"
+        
+        if [[ "$mode" == "force" ]]; then
+            log_warn "Force mode enabled. Cleaning without prompts."
+        fi
+        
+        for i in "${!cat_names[@]}"; do
+            size=$(process_category "${cat_names[$i]}" "${cat_paths[$i]}" "$mode")
+            if [[ -n "$size" && "$size" =~ ^[0-9]+$ ]]; then
+                total_size=$((total_size + size))
+            fi
+        done
+        
+        echo ""
+        if [[ $total_size -gt 0 ]]; then
+            log_success "Total space recovered: $(format_bytes $total_size)"
+        else
+            log_info "No space was recovered (either empty or skipped)"
+        fi
+        
+        # Purge inactive memory (doesn't recover disk space, but helps sys RAM)
+        if [[ "$mode" == "force" ]] || confirm "Purge inactive memory (requires sudo)?"; then
+            echo "Running sudo purge..."
+            sudo purge || true
+            log_success "Memory purged"
+        fi
+    fi
+}
+
+main "$@"

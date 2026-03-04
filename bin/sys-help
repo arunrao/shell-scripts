@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# sys-help - Discover and list all installed shell scripts
+# Lists all available scripts in the shell-scripts library with their descriptions.
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+# Resolve symlinks to find the real script location
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+
+show_usage() {
+    cat <<EOF
+Usage: sys-help [options]
+
+Discover and list all installed shell scripts from the library with their descriptions.
+
+Options:
+  -h, --help      Show this help
+
+Examples:
+  sys-help
+EOF
+}
+
+main() {
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+
+    echo -e "${BLUE}Shell Scripts Library - Available Commands${NC}"
+    echo ""
+
+    local bin_dir="$SCRIPT_DIR"
+    local count=0
+
+    # Read all scripts in bin directory
+    for script in "$bin_dir"/*; do
+        if [[ -f "$script" && -x "$script" ]]; then
+            local script_name
+            script_name=$(basename "$script")
+            local description="No description available"
+
+            # Try to extract description from header comments (# script-name - Description)
+            local line2
+            line2=$(sed -n '2p' "$script" 2>/dev/null || true)
+            
+            if [[ "$line2" =~ ^#[[:space:]]*${script_name}[[:space:]]*-[[:space:]]*(.*)$ ]]; then
+                description="${BASH_REMATCH[1]}"
+            elif [[ "$line2" =~ ^#[[:space:]]*(.*)$ ]]; then
+                # Fallback to just reading the whole comment if format strictly doesn't match
+                description="${BASH_REMATCH[1]}"
+                # Remove script name prefix if it exists without dash
+                description="${description#${script_name} }"
+                description="${description#${script_name}- }"
+            fi
+
+            printf "  ${GREEN}%-15s${NC} %s\n" "$script_name" "$description"
+            ((count++))
+        fi
+    done
+
+    echo ""
+    echo -e "${BLUE}Total scripts: ${count}${NC}"
+    echo "Run '<command> --help' for detailed usage"
+}
+
+main "$@"
